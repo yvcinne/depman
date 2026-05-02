@@ -1,0 +1,11 @@
+# Compiled C binary
+depman_thread
+
+# Logs and snapshots (created at runtime)
+*.log
+snapshots/
+
+# Editor / OS artifacts
+.DS_Store
+*.swp
+*~

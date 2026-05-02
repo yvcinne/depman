@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# =============================================================================
+# depman — Gestionnaire de dépendances Bash
+# ESET Mohammedia 2025-2026
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+LOG_DIR="/var/log/depman"
+LOG_FILE="$LOG_DIR/history.log"
+SNAPSHOT_DIR="$LOG_DIR/snapshots"
+THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
+THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log() {
+    local type="$1"   # INFOS ou ERROR
+    local msg="$2"
+    local ts
+    ts=$(date "+%Y-%m-%d-%H-%M-%S")
+    local user
+    user=$(whoami)
+    local entry="$ts:$user:$type:$msg"
+    # Redirection simultanée terminal + fichier log
+    # Créer le répertoire log si nécessaire (best effort)
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    echo "$entry" | tee -a "$LOG_FILE"
+}
+
+log_info()  { log "INFOS" "$1"; }
+log_error() { log "ERROR" "$1" >&2; }
+
+# ---------------------------------------------------------------------------
+# Gestion des erreurs
+# ---------------------------------------------------------------------------
+handle_error() {
+    local code="$1"
+    local msg="$2"
+    log_error "[Erreur $code] $msg"
+    show_help
+    exit "$code"
+}
+
+# ---------------------------------------------------------------------------
+# Aide
+# ---------------------------------------------------------------------------
+show_help() {
+    cat <<'EOF'
+
+USAGE
+  depman [OPTIONS] <projet>
+
+OPTIONS
+  -s <projet>   Mode subshell  — vérification séquentielle dans un sous-shell
+  -f <projet>   Mode fork      — vérification parallèle par processus fils
+  -t <projet>   Mode thread    — vérification parallèle via depman_thread (C+pthreads)
+  -l <fichier>  Chemin alternatif pour le fichier de log (défaut: /var/log/depman/history.log)
+  -r <projet>   Restauration   — restaure l'état dpkg depuis le dernier snapshot (root requis)
+  -h            Affiche cette aide
+
+CODES D'ERREUR
+  100  Option inexistante
+  101  Paramètre <projet> manquant
+  102  Fichier deps.conf introuvable
+  103  Paquet introuvable dans les dépôts apt
+  104  Privilèges root requis
+  105  Snapshot introuvable
+  106  Compilation de depman_thread.c échouée
+
+EXEMPLES
+  depman -s projet-light
+  depman -f projet-medium
+  depman -t projet-heavy
+  sudo depman -r projet-medium
+
+FORMAT deps.conf
+  # commentaire
+  [project:monapp]
+  git >= 2.30
+  curl >= 7.0
+  nodejs >= 16.0
+
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Comparaison de versions (Bash pur)
+# Retourne 0 si $1 >= $2, 1 sinon
+# ---------------------------------------------------------------------------
+version_ge() {
+    local installed="$1"
+    local required="$2"
+
+    # Normalise en tableaux de nombres
+    IFS='.' read -ra inst_parts <<< "$installed"
+    IFS='.' read -ra req_parts  <<< "$required"
+
+    local max_len="${#inst_parts[@]}"
+    (( ${#req_parts[@]} > max_len )) && max_len="${#req_parts[@]}"
+
+    for (( i=0; i<max_len; i++ )); do
+        local a="${inst_parts[$i]:-0}"
+        local b="${req_parts[$i]:-0}"
+        # Garde uniquement la partie numérique (ex: "2.43.0-ubuntu")
+        a="${a//[^0-9]/}"
+        b="${b//[^0-9]/}"
+        a="${a:-0}"; b="${b:-0}"
+        if (( 10#$a > 10#$b )); then return 0; fi
+        if (( 10#$a < 10#$b )); then return 1; fi
+    done
+    return 0   # égaux → OK
+}
+
+# ---------------------------------------------------------------------------
+# Vérification et installation d'un paquet
+# ---------------------------------------------------------------------------
+check_dep() {
+    local pkg="$1"
+    local req_ver="$2"
+
+    # Vérifier si le paquet est installé
+    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+        # Récupérer la version installée
+        local inst_ver
+        inst_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
+        # Enlever epoch éventuel (ex: 1:2.43.0 → 2.43.0)
+        inst_ver="${inst_ver##*:}"
+        # Garder seulement la partie x.y.z avant le tiret de révision
+        inst_ver="${inst_ver%%-*}"
+
+        if version_ge "$inst_ver" "$req_ver"; then
+            log_info "Vérification de $pkg >= $req_ver -> OK (v$inst_ver)"
+        else
+            log_info "$pkg installé (v$inst_ver) mais version insuffisante (>= $req_ver requis). Mise à jour..."
+            install_dep "$pkg"
+        fi
+    else
+        log_info "$pkg absent, installation en cours..."
+        install_dep "$pkg"
+    fi
+}
+
+install_dep() {
+    local pkg="$1"
+    # Vérifier que le paquet existe dans les dépôts
+    if ! apt-cache show "$pkg" &>/dev/null; then
+        log_error "$pkg introuvable dans les dépôts apt [code 103]"
+        return 103
+    fi
+    if apt-get install -y "$pkg" &>/dev/null; then
+        local new_ver
+        new_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
+        new_ver="${new_ver##*:}"; new_ver="${new_ver%%-*}"
+        log_info "$pkg installé avec succès (v$new_ver)"
+    else
+        log_error "$pkg : échec de l'installation [code 103]"
+        return 103
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Parsing de deps.conf
+# ---------------------------------------------------------------------------
+parse_conf() {
+    local project="$1"
+    local conf_file="$project/deps.conf"
+
+    # Erreur 102 si fichier absent
+    [[ ! -f "$conf_file" ]] && handle_error 102 "deps.conf introuvable dans '$project'"
+
+    # Lire les dépendances (ignorer commentaires, sections, lignes vides)
+    while IFS= read -r line; do
+        # Ignorer commentaires et sections
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*\[ ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        # Parser : paquet >= version
+        if [[ "$line" =~ ^([a-zA-Z0-9_+.-]+)[[:space:]]*\>=[[:space:]]*([0-9][0-9.]*)$ ]]; then
+            local pkg="${BASH_REMATCH[1]}"
+            local ver="${BASH_REMATCH[2]}"
+            echo "$pkg $ver"
+        fi
+    done < "$conf_file"
+}
+
+# ---------------------------------------------------------------------------
+# Snapshot
+# ---------------------------------------------------------------------------
+snapshot() {
+    local project="$1"
+    mkdir -p "$SNAPSHOT_DIR"
+    local snap_file="$SNAPSHOT_DIR/${project//\//_}_$(date +%Y%m%d%H%M%S).snap"
+    dpkg --get-selections > "$snap_file"
+    log_info "Snapshot sauvegardé : $snap_file"
+    echo "$snap_file"
+}
+
+restore_snapshot() {
+    local project="$1"
+    local pattern="$SNAPSHOT_DIR/${project//\//_}_*.snap"
+    # Trouver le snapshot le plus récent
+    local snap_file
+    snap_file=$(ls -t $pattern 2>/dev/null | head -1)
+    [[ -z "$snap_file" ]] && handle_error 105 "Aucun snapshot trouvé pour '$project'"
+
+    log_info "Restauration depuis $snap_file ..."
+    dpkg --set-selections < "$snap_file"
+    apt-get dselect-upgrade -y
+    log_info "Restauration terminée."
+}
+
+# ---------------------------------------------------------------------------
+# Compilation du programme C
+# ---------------------------------------------------------------------------
+compile_thread_prog() {
+    # Ne recompiler que si binaire absent ou source plus récente
+    if [[ -f "$THREAD_BIN" && "$THREAD_BIN" -nt "$THREAD_SRC" ]]; then
+        return 0
+    fi
+    [[ ! -f "$THREAD_SRC" ]] && handle_error 106 "depman_thread.c introuvable"
+    gcc -o "$THREAD_BIN" "$THREAD_SRC" -lpthread \
+        || handle_error 106 "Compilation de depman_thread.c échouée"
+    log_info "Programme thread compilé avec succès"
+}
+
+# ---------------------------------------------------------------------------
+# Mode SUBSHELL (-s)  — séquentiel dans un sous-shell (isolation variables)
+# ---------------------------------------------------------------------------
+run_subshell() {
+    local project="$1"
+    log_info "=== Mode subshell pour '$project' ==="
+    (
+        while IFS=' ' read -r pkg ver; do
+            check_dep "$pkg" "$ver"
+        done < <(parse_conf "$project")
+    )
+    local code=$?
+    snapshot "$project"
+    return $code
+}
+
+# ---------------------------------------------------------------------------
+# Mode FORK (-f)  — un processus fils par paquet
+# ---------------------------------------------------------------------------
+run_fork() {
+    local project="$1"
+    log_info "=== Mode fork pour '$project' ==="
+
+    local pids=()
+    while IFS=' ' read -r pkg ver; do
+        (
+            check_dep "$pkg" "$ver"
+        ) &
+        pids+=($!)
+        log_info "Processus fils lancé pour $pkg (PID $!)"
+    done < <(parse_conf "$project")
+
+    # Attendre tous les fils
+    local exit_code=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || exit_code=$?
+    done
+
+    snapshot "$project"
+    return $exit_code
+}
+
+# ---------------------------------------------------------------------------
+# Mode THREAD (-t)  — dépendances vérifiées via depman_thread (C+pthreads)
+# ---------------------------------------------------------------------------
+run_thread() {
+    local project="$1"
+    log_info "=== Mode thread pour '$project' ==="
+
+    compile_thread_prog
+
+    # Collecter la liste des paquets
+    local pkgs=()
+    local vers=()
+    while IFS=' ' read -r pkg ver; do
+        pkgs+=("$pkg")
+        vers+=("$ver")
+    done < <(parse_conf "$project")
+
+    [[ ${#pkgs[@]} -eq 0 ]] && handle_error 102 "Aucune dépendance dans deps.conf"
+
+    # Appel du programme C (vérifie la présence du paquet en parallèle)
+    local results
+    results=$(time "$THREAD_BIN" "${pkgs[@]}" 2>&1)
+
+    # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
+    while IFS=: read -r pkg status; do
+        if [[ "$status" -eq 1 ]]; then
+            log_info "$pkg : présent"
+        else
+            log_info "$pkg : absent — installation en cours..."
+            install_dep "$pkg"
+        fi
+    done <<< "$results"
+
+    snapshot "$project"
+}
+
+# ---------------------------------------------------------------------------
+# Mode RESTAURATION (-r)  — root requis
+# ---------------------------------------------------------------------------
+run_restore() {
+    local project="$1"
+    [[ $EUID -ne 0 ]] && handle_error 104 "L'option -r nécessite les privilèges root"
+    restore_snapshot "$project"
+}
+
+# ---------------------------------------------------------------------------
+# Point d'entrée principal
+# ---------------------------------------------------------------------------
+main() {
+    [[ $# -eq 0 ]] && { show_help; exit 101; }
+
+    local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0
+    local project="" alt_log=""
+
+    # Parsing des options avec getopt
+    local OPTS
+    OPTS=$(getopt -o s:f:t:l:r:h --long help -n "depman" -- "$@") \
+        || handle_error 100 "Option non reconnue"
+    eval set -- "$OPTS"
+
+    while true; do
+        case "$1" in
+            -s) opt_s=1; project="$2"; shift 2 ;;
+            -f) opt_f=1; project="$2"; shift 2 ;;
+            -t) opt_t=1; project="$2"; shift 2 ;;
+            -r) opt_r=1; project="$2"; shift 2 ;;
+            -l) opt_l=1; alt_log="$2"; LOG_FILE="$alt_log"; shift 2 ;;
+            -h|--help) show_help; exit 0 ;;
+            --) shift; break ;;
+            *) handle_error 100 "Option non reconnue : $1" ;;
+        esac
+    done
+
+    # Vérifier qu'un projet est fourni si une action est demandée
+    if (( opt_s || opt_f || opt_t || opt_r )); then
+        [[ -z "$project" ]] && handle_error 101 "Paramètre <projet> manquant"
+    else
+        handle_error 101 "Aucune option d'action fournie"
+    fi
+
+    # Créer le répertoire de log
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+    # Dispatcher
+    if   (( opt_r )); then run_restore "$project"
+    elif (( opt_s )); then run_subshell "$project"
+    elif (( opt_f )); then run_fork    "$project"
+    elif (( opt_t )); then run_thread  "$project"
+    fi
+}
+
+main "$@"

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# =============================================================================
+# gen-deps — Génère automatiquement un fichier deps.conf
+#            à partir des paquets installés sur le système.
+#
+# Usage : gen-deps [<projet>] [paquet1 paquet2 ...]
+#
+# Exemples :
+#   gen-deps                         → génère deps.conf dans le répertoire courant
+#   gen-deps mon-projet              → génère mon-projet/deps.conf
+#   gen-deps mon-projet git curl gcc → seulement ces paquets
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Récupère la version installée d'un paquet (ou "non installé")
+# ---------------------------------------------------------------------------
+get_version() {
+    local pkg="$1"
+    local ver
+    ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
+    if [[ -z "$ver" ]]; then
+        echo ""
+    else
+        # Supprimer epoch (ex: 1:2.43.0 → 2.43.0) et révision (2.43.0-ubuntu → 2.43.0)
+        ver="${ver##*:}"
+        ver="${ver%%-*}"
+        echo "$ver"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Paquets par défaut si aucun n'est fourni
+# ---------------------------------------------------------------------------
+DEFAULT_PACKAGES=(
+    git curl wget python3 nodejs gcc make cmake
+    unzip tar pkg-config build-essential
+)
+
+# ---------------------------------------------------------------------------
+# Parsing des arguments
+# ---------------------------------------------------------------------------
+PROJECT=""
+PACKAGES=()
+
+if [[ $# -ge 1 && ! "$1" =~ ^- ]]; then
+    PROJECT="$1"
+    shift
+fi
+
+if [[ $# -ge 1 ]]; then
+    PACKAGES=("$@")
+else
+    PACKAGES=("${DEFAULT_PACKAGES[@]}")
+fi
+
+# ---------------------------------------------------------------------------
+# Destination du fichier
+# ---------------------------------------------------------------------------
+if [[ -n "$PROJECT" ]]; then
+    mkdir -p "$PROJECT"
+    OUT="$PROJECT/deps.conf"
+else
+    OUT="deps.conf"
+fi
+
+PROJECT_NAME="${PROJECT:-$(basename "$(pwd)")}"
+
+# ---------------------------------------------------------------------------
+# Génération
+# ---------------------------------------------------------------------------
+{
+    echo "# Fichier de configuration des dépendances"
+    echo "# Généré automatiquement le $(date '+%Y-%m-%d %H:%M:%S') par gen-deps"
+    echo "# Format : nom_paquet >= version_minimale"
+    echo ""
+    echo "[project:$PROJECT_NAME]"
+
+    for pkg in "${PACKAGES[@]}"; do
+        ver=$(get_version "$pkg")
+        if [[ -n "$ver" ]]; then
+            printf "%-20s >= %s\n" "$pkg" "$ver"
+        else
+            echo "# $pkg  (non installé — version minimale à définir manuellement)"
+        fi
+    done
+} > "$OUT"
+
+echo "deps.conf généré : $OUT"
+cat "$OUT"
