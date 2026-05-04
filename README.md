@@ -1,10 +1,11 @@
 # depman — Gestionnaire de Dépendances Bash
 
-
 `depman` est un outil en ligne de commande écrit en **Bash 5.x** qui automatise
 la vérification et l'installation des dépendances d'un projet à partir d'un
 fichier `deps.conf`. Il propose trois modes d'exécution (subshell, fork,
 threads C) et maintient un journal horodaté de toutes les actions.
+
+> **Distros supportées :** Debian/Ubuntu (`apt`) • Arch (`pacman`) • Fedora/RHEL (`dnf`) • CentOS ancien (`yum`) • openSUSE (`zypper`) • Alpine (`apk`)
 
 ---
 
@@ -25,12 +26,24 @@ threads C) et maintient un journal horodaté de toutes les actions.
 
 ## Prérequis
 
-| Outil         | Version minimale | Usage                         |
-|---------------|-----------------|-------------------------------|
-| Bash          | 5.x             | Script principal              |
-| gcc           | 9.0             | Compilation de `depman_thread.c` |
-| dpkg / apt    | —               | Gestion des paquets           |
-| getopt        | —               | Parsing des options           |
+| Outil | Version minimale | Usage |
+|-------|-----------------|-------|
+| Bash | 5.x | Script principal |
+| gcc | 9.0 | Compilation de `depman_thread.c` |
+| getopt | — | Parsing des options |
+
+### Gestionnaires de paquets supportés
+
+| Gestionnaire | Distros |
+|-------------|--------|
+| `apt-get` | Debian, Ubuntu, Kali, Mint, Raspbian |
+| `pacman` | Arch Linux, Manjaro, EndeavourOS |
+| `dnf` | Fedora, RHEL 8+, Rocky, AlmaLinux |
+| `yum` | CentOS 7, RHEL 7 et antérieurs |
+| `zypper` | openSUSE Leap / Tumbleweed |
+| `apk` | Alpine Linux, images Docker |
+
+Le gestionnaire est **détecté automatiquement** au démarrage via `detect_pm()`.
 
 ---
 
@@ -130,7 +143,7 @@ make >= 4.0
 | 100 | Option inexistante | `getopt` ne reconnaît pas l'option |
 | 101 | Paramètre `<projet>` manquant | Aucun argument positionnel fourni |
 | 102 | Fichier `deps.conf` introuvable | Fichier absent dans le répertoire projet |
-| 103 | Paquet introuvable dans apt | `apt-cache show` retourne une erreur |
+| 103 | Paquet introuvable dans les dépôts | Le gestionnaire de paquets détecté ne trouve pas le paquet |
 | 104 | Privilèges root requis | Option `-r` sans `sudo`/root |
 | 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` |
 | 106 | Compilation `depman_thread.c` échouée | `gcc` retourne un code non-zéro |
@@ -165,11 +178,18 @@ yyyy-mm-dd-hh-mm-ss:username:ERROR:message
 
 ## Snapshots
 
-Un snapshot capture l'état complet des paquets installés (`dpkg --get-selections`).
+Un snapshot capture l'état complet des paquets installés.
 
 - **Création automatique** à la fin de chaque exécution réussie (`-s`, `-f`, `-t`).
 - **Emplacement :** `/var/log/depman/snapshots/<projet>_YYYYMMDDHHMMSS.snap`
 - **Restauration :** `sudo depman -r <projet>` (code 105 si aucun snapshot trouvé)
+
+| Gestionnaire | Commande snapshot | Restauration |
+|-------------|------------------|--------------|
+| `apt` | `dpkg --get-selections` | `dpkg --set-selections` + `apt-get` |
+| `pacman` | `pacman -Qqe` | `pacman -S` |
+| `dnf/yum/zypper` | `rpm -qa` | Informatif uniquement |
+| `apk` | `apk info` | Informatif uniquement |
 
 ---
 
@@ -227,14 +247,15 @@ depman -t projet-heavy
 ## Architecture
 
 ```
-TeamID-devoir-shell/
+depman/
 ├── depman            # Script principal Bash (exécutable)
 ├── depman_thread.c   # Programme C (option -t, vérification parallèle)
 ├── deps.conf         # Exemple de configuration
+├── gen-deps          # Helper : génère deps.conf depuis les paquets installés
 ├── README.md         # Ce fichier
 └── /var/log/depman/          # Créé automatiquement
     ├── history.log            # Journal horodaté de toutes les actions
-    └── snapshots/             # Sauvegardes des états dpkg
+    └── snapshots/             # Sauvegardes d'état des paquets
         └── projet_YYYYMMDDHHMMSS.snap
 ```
 
@@ -245,16 +266,18 @@ TeamID-devoir-shell/
 | `depman` | Script principal, point d'entrée | Bash 5.x |
 | `depman_thread.c` | Vérification parallèle | C + POSIX pthreads |
 | `deps.conf` | Déclaration déclarative des dépendances | Format `.conf` maison |
+| `gen-deps` | Génère `deps.conf` depuis les paquets installés | Bash 5.x |
 | `history.log` | Journal horodaté | Texte structuré |
-| `snapshots/` | Sauvegardes d'état | `dpkg --get-selections` |
+| `snapshots/` | Sauvegardes d'état | apt/pacman/rpm/apk |
 
 ### Fonctions Bash principales
 
 | Fonction | Rôle |
 |----------|------|
+| `detect_pm()` | Détecte le gestionnaire de paquets (`apt`/`pacman`/`dnf`/`yum`/`zypper`/`apk`) |
 | `parse_conf()` | Lit et parse `deps.conf` |
-| `check_dep()` | Vérifie si un paquet est installé et sa version |
-| `install_dep()` | Installe un paquet via `apt-get` |
+| `check_dep()` | Vérifie si un paquet est installé et sa version (distro-agnostique) |
+| `install_dep()` | Installe un paquet via le bon gestionnaire (distro-agnostique) |
 | `snapshot()` | Capture l'état courant des paquets |
 | `restore_snapshot()` | Restaure depuis un snapshot |
 | `log()` / `log_info()` / `log_error()` | Journalisation horodatée |

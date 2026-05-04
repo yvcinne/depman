@@ -14,6 +14,7 @@ LOG_FILE="$LOG_DIR/history.log"
 SNAPSHOT_DIR="$LOG_DIR/snapshots"
 THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
 THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
+PM=""   # Détecté au démarrage par detect_pm()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -36,13 +37,27 @@ log_info()  { log "INFOS" "$1"; }
 log_error() { log "ERROR" "$1" >&2; }
 
 # ---------------------------------------------------------------------------
+# Détection du gestionnaire de paquets
+# ---------------------------------------------------------------------------
+detect_pm() {
+    if   command -v apt-get &>/dev/null; then echo "apt"
+    elif command -v pacman  &>/dev/null; then echo "pacman"
+    elif command -v dnf     &>/dev/null; then echo "dnf"
+    elif command -v yum     &>/dev/null; then echo "yum"
+    elif command -v zypper  &>/dev/null; then echo "zypper"
+    elif command -v apk     &>/dev/null; then echo "apk"
+    else echo "unknown"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Gestion des erreurs
 # ---------------------------------------------------------------------------
 handle_error() {
     local code="$1"
     local msg="$2"
     log_error "[Erreur $code] $msg"
-    show_help
+    log_error "Utilisez 'depman -h' pour afficher l'aide."
     exit "$code"
 }
 
@@ -56,12 +71,16 @@ USAGE
   depman [OPTIONS] <projet>
 
 OPTIONS
-  -s <projet>   Mode subshell  — vérification séquentielle dans un sous-shell
-  -f <projet>   Mode fork      — vérification parallèle par processus fils
-  -t <projet>   Mode thread    — vérification parallèle via depman_thread (C+pthreads)
-  -l <fichier>  Chemin alternatif pour le fichier de log (défaut: /var/log/depman/history.log)
-  -r <projet>   Restauration   — restaure l'état dpkg depuis le dernier snapshot (root requis)
-  -h            Affiche cette aide
+  -s <projet>             Mode subshell  — vérification séquentielle dans un sous-shell
+  -f <projet>             Mode fork      — vérification parallèle par processus fils
+  -t <projet>             Mode thread    — vérification parallèle via depman_thread (C+pthreads)
+  -l <répertoire>         Répertoire de stockage du fichier de journalisation (défaut: /var/log/depman/)
+                          Le fichier history.log sera créé dans ce répertoire.
+  -r <projet> [horodatage]  Restauration — restaure depuis le dernier snapshot (root requis)
+                          Si [horodatage] est fourni, restaure ce snapshot précis.
+                          Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
+                          Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
+  -h                      Affiche cette aide
 
 CODES D'ERREUR
   100  Option inexistante
@@ -76,7 +95,8 @@ EXEMPLES
   depman -s projet-light
   depman -f projet-medium
   depman -t projet-heavy
-  sudo depman -r projet-medium
+  sudo depman -r projet-medium                  # dernier snapshot
+  sudo depman -r projet-medium 20260504120000   # snapshot spécifique
 
 FORMAT deps.conf
   # commentaire
@@ -117,22 +137,54 @@ version_ge() {
 }
 
 # ---------------------------------------------------------------------------
-# Vérification et installation d'un paquet
+# Vérification et installation d'un paquet (distro-agnostique)
 # ---------------------------------------------------------------------------
 check_dep() {
     local pkg="$1"
     local req_ver="$2"
+    local inst_ver=""
+    local installed=false
 
-    # Vérifier si le paquet est installé
-    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
-        # Récupérer la version installée
-        local inst_ver
-        inst_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
-        # Enlever epoch éventuel (ex: 1:2.43.0 → 2.43.0)
-        inst_ver="${inst_ver##*:}"
-        # Garder seulement la partie x.y.z avant le tiret de révision
-        inst_ver="${inst_ver%%-*}"
+    case "$PM" in
+        apt)
+            if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+                installed=true
+                inst_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
+                inst_ver="${inst_ver##*:}"; inst_ver="${inst_ver%%-*}"
+            fi
+            ;;
+        pacman)
+            if pacman -Q "$pkg" &>/dev/null; then
+                installed=true
+                inst_ver=$(pacman -Q "$pkg" 2>/dev/null | awk '{print $2}')
+                inst_ver="${inst_ver%%-*}"
+            fi
+            ;;
+        dnf|yum)
+            if rpm -q "$pkg" &>/dev/null; then
+                installed=true
+                inst_ver=$(rpm -q --qf '%{VERSION}' "$pkg" 2>/dev/null)
+            fi
+            ;;
+        zypper)
+            if rpm -q "$pkg" &>/dev/null; then
+                installed=true
+                inst_ver=$(rpm -q --qf '%{VERSION}' "$pkg" 2>/dev/null)
+            fi
+            ;;
+        apk)
+            if apk info -e "$pkg" &>/dev/null; then
+                installed=true
+                inst_ver=$(apk info "$pkg" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+[.0-9]*')
+            fi
+            ;;
+        *)
+            log_error "Gestionnaire de paquets non supporté : $PM"
+            return 1
+            ;;
+    esac
 
+    if $installed; then
         if version_ge "$inst_ver" "$req_ver"; then
             log_info "Vérification de $pkg >= $req_ver -> OK (v$inst_ver)"
         else
@@ -147,20 +199,72 @@ check_dep() {
 
 install_dep() {
     local pkg="$1"
-    # Vérifier que le paquet existe dans les dépôts
-    if ! apt-cache show "$pkg" &>/dev/null; then
-        log_error "$pkg introuvable dans les dépôts apt [code 103]"
-        return 103
-    fi
-    if apt-get install -y "$pkg" &>/dev/null; then
-        local new_ver
-        new_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
-        new_ver="${new_ver##*:}"; new_ver="${new_ver%%-*}"
-        log_info "$pkg installé avec succès (v$new_ver)"
-    else
-        log_error "$pkg : échec de l'installation [code 103]"
-        return 103
-    fi
+    local new_ver=""
+
+    case "$PM" in
+        apt)
+            if ! apt-cache show "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts apt [code 103]"
+                return 103
+            fi
+            apt-get install -y "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}' | head -1)
+            new_ver="${new_ver##*:}"; new_ver="${new_ver%%-*}"
+            ;;
+        pacman)
+            if ! pacman -Si "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts pacman [code 103]"
+                return 103
+            fi
+            pacman -S --noconfirm "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(pacman -Q "$pkg" 2>/dev/null | awk '{print $2}')
+            new_ver="${new_ver%%-*}"
+            ;;
+        dnf)
+            if ! dnf info "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts dnf [code 103]"
+                return 103
+            fi
+            dnf install -y "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(rpm -q --qf '%{VERSION}' "$pkg" 2>/dev/null)
+            ;;
+        yum)
+            if ! yum info "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts yum [code 103]"
+                return 103
+            fi
+            yum install -y "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(rpm -q --qf '%{VERSION}' "$pkg" 2>/dev/null)
+            ;;
+        zypper)
+            if ! zypper info "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts zypper [code 103]"
+                return 103
+            fi
+            zypper install -y "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(rpm -q --qf '%{VERSION}' "$pkg" 2>/dev/null)
+            ;;
+        apk)
+            if ! apk search -e "$pkg" &>/dev/null; then
+                log_error "$pkg introuvable dans les dépôts apk [code 103]"
+                return 103
+            fi
+            apk add "$pkg" &>/dev/null \
+                || { log_error "$pkg : échec de l'installation [code 103]"; return 103; }
+            new_ver=$(apk info "$pkg" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+[.0-9]*')
+            ;;
+        *)
+            log_error "Gestionnaire de paquets non supporté : $PM [code 103]"
+            return 103
+            ;;
+    esac
+
+    log_info "$pkg installé avec succès (v${new_ver:-?})"
 }
 
 # ---------------------------------------------------------------------------
@@ -190,28 +294,71 @@ parse_conf() {
 }
 
 # ---------------------------------------------------------------------------
-# Snapshot
+# Snapshot (distro-agnostique)
 # ---------------------------------------------------------------------------
 snapshot() {
     local project="$1"
     mkdir -p "$SNAPSHOT_DIR"
     local snap_file="$SNAPSHOT_DIR/${project//\//_}_$(date +%Y%m%d%H%M%S).snap"
-    dpkg --get-selections > "$snap_file"
+
+    case "$PM" in
+        apt)    dpkg --get-selections > "$snap_file" ;;
+        pacman) pacman -Qqe            > "$snap_file" ;;
+        dnf|yum|zypper) rpm -qa --qf '%{NAME}\n' > "$snap_file" ;;
+        apk)    apk info               > "$snap_file" ;;
+        *)
+            log_error "Snapshot non supporté pour le gestionnaire : $PM"
+            return 1
+            ;;
+    esac
+
     log_info "Snapshot sauvegardé : $snap_file"
     echo "$snap_file"
 }
 
 restore_snapshot() {
     local project="$1"
+    local snap_ts="${2:-}"   # horodatage optionnel (ex: 20260504120000)
     local pattern="$SNAPSHOT_DIR/${project//\//_}_*.snap"
-    # Trouver le snapshot le plus récent
     local snap_file
-    snap_file=$(ls -t $pattern 2>/dev/null | head -1)
-    [[ -z "$snap_file" ]] && handle_error 105 "Aucun snapshot trouvé pour '$project'"
+
+    if [[ -n "$snap_ts" ]]; then
+        # Snapshot spécifique demandé
+        snap_file="$SNAPSHOT_DIR/${project//\//_}_${snap_ts}.snap"
+        if [[ ! -f "$snap_file" ]]; then
+            log_error "Snapshot '$snap_ts' introuvable pour '$project'."
+            log_error "Snapshots disponibles :"
+            # shellcheck disable=SC2086
+            ls -1t $pattern 2>/dev/null \
+                | sed "s|$SNAPSHOT_DIR/||" \
+                | sed "s|${project//\//_}_||;s|\.snap||" \
+                || log_error "  (aucun snapshot trouvé)"
+            handle_error 105 "Snapshot introuvable : $snap_ts"
+        fi
+    else
+        # Dernier snapshot (comportement par défaut)
+        # shellcheck disable=SC2086
+        snap_file=$(ls -t $pattern 2>/dev/null | head -1)
+        [[ -z "$snap_file" ]] && handle_error 105 "Aucun snapshot trouvé pour '$project'"
+    fi
 
     log_info "Restauration depuis $snap_file ..."
-    dpkg --set-selections < "$snap_file"
-    apt-get dselect-upgrade -y
+    case "$PM" in
+        apt)
+            dpkg --set-selections < "$snap_file"
+            apt-get dselect-upgrade -y
+            ;;
+        pacman)
+            # shellcheck disable=SC2046
+            pacman -S --noconfirm $(cat "$snap_file") &>/dev/null
+            ;;
+        dnf|yum|zypper|apk)
+            log_error "Restauration automatique non supportée pour $PM — snapshot conservé à titre informatif."
+            ;;
+        *)
+            handle_error 105 "Restauration non supportée pour : $PM"
+            ;;
+    esac
     log_info "Restauration terminée."
 }
 
@@ -312,18 +459,19 @@ run_thread() {
 # ---------------------------------------------------------------------------
 run_restore() {
     local project="$1"
+    local snap_ts="${2:-}"
     [[ $EUID -ne 0 ]] && handle_error 104 "L'option -r nécessite les privilèges root"
-    restore_snapshot "$project"
+    restore_snapshot "$project" "$snap_ts"
 }
 
 # ---------------------------------------------------------------------------
 # Point d'entrée principal
 # ---------------------------------------------------------------------------
 main() {
-    [[ $# -eq 0 ]] && { show_help; exit 101; }
+    [[ $# -eq 0 ]] && { log_error "[Erreur 101] Aucune option fournie. Utilisez 'depman -h' pour afficher l'aide."; exit 101; }
 
     local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0
-    local project="" alt_log=""
+    local project="" alt_log="" snap_ts=""
 
     # Parsing des options avec getopt
     local OPTS
@@ -337,12 +485,15 @@ main() {
             -f) opt_f=1; project="$2"; shift 2 ;;
             -t) opt_t=1; project="$2"; shift 2 ;;
             -r) opt_r=1; project="$2"; shift 2 ;;
-            -l) opt_l=1; alt_log="$2"; LOG_FILE="$alt_log"; shift 2 ;;
+            -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
         esac
     done
+
+    # Argument positionnel optionnel : horodatage snapshot pour -r
+    snap_ts="${1:-}"
 
     # Vérifier qu'un projet est fourni si une action est demandée
     if (( opt_s || opt_f || opt_t || opt_r )); then
@@ -354,8 +505,13 @@ main() {
     # Créer le répertoire de log
     mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+    # Détecter le gestionnaire de paquets
+    PM=$(detect_pm)
+    log_info "Gestionnaire de paquets détecté : $PM"
+    [[ "$PM" == "unknown" ]] && handle_error 100 "Aucun gestionnaire de paquets supporté trouvé (apt/pacman/dnf/yum/zypper/apk)"
+
     # Dispatcher
-    if   (( opt_r )); then run_restore "$project"
+    if   (( opt_r )); then run_restore "$project" "$snap_ts"
     elif (( opt_s )); then run_subshell "$project"
     elif (( opt_f )); then run_fork    "$project"
     elif (( opt_t )); then run_thread  "$project"
