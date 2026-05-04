@@ -74,7 +74,8 @@ OPTIONS
   -s <projet>             Mode subshell  — vérification séquentielle dans un sous-shell
   -f <projet>             Mode fork      — vérification parallèle par processus fils
   -t <projet>             Mode thread    — vérification parallèle via depman_thread (C+pthreads)
-  -l <fichier>            Chemin alternatif pour le fichier de log (défaut: /var/log/depman/history.log)
+  -l <répertoire>         Répertoire de stockage du fichier de journalisation (défaut: /var/log/depman/)
+                          Le fichier history.log sera créé dans ce répertoire.
   -r <projet> [horodatage]  Restauration — restaure depuis le dernier snapshot (root requis)
                           Si [horodatage] est fourni, restaure ce snapshot précis.
                           Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
@@ -484,7 +485,7 @@ main() {
             -f) opt_f=1; project="$2"; shift 2 ;;
             -t) opt_t=1; project="$2"; shift 2 ;;
             -r) opt_r=1; project="$2"; shift 2 ;;
-            -l) opt_l=1; alt_log="$2"; LOG_FILE="$alt_log"; shift 2 ;;
+            -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
