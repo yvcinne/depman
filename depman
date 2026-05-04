@@ -71,12 +71,15 @@ USAGE
   depman [OPTIONS] <projet>
 
 OPTIONS
-  -s <projet>   Mode subshell  — vérification séquentielle dans un sous-shell
-  -f <projet>   Mode fork      — vérification parallèle par processus fils
-  -t <projet>   Mode thread    — vérification parallèle via depman_thread (C+pthreads)
-  -l <fichier>  Chemin alternatif pour le fichier de log (défaut: /var/log/depman/history.log)
-  -r <projet>   Restauration   — restaure l'état dpkg depuis le dernier snapshot (root requis)
-  -h            Affiche cette aide
+  -s <projet>             Mode subshell  — vérification séquentielle dans un sous-shell
+  -f <projet>             Mode fork      — vérification parallèle par processus fils
+  -t <projet>             Mode thread    — vérification parallèle via depman_thread (C+pthreads)
+  -l <fichier>            Chemin alternatif pour le fichier de log (défaut: /var/log/depman/history.log)
+  -r <projet> [horodatage]  Restauration — restaure depuis le dernier snapshot (root requis)
+                          Si [horodatage] est fourni, restaure ce snapshot précis.
+                          Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
+                          Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
+  -h                      Affiche cette aide
 
 CODES D'ERREUR
   100  Option inexistante
@@ -91,7 +94,8 @@ EXEMPLES
   depman -s projet-light
   depman -f projet-medium
   depman -t projet-heavy
-  sudo depman -r projet-medium
+  sudo depman -r projet-medium                  # dernier snapshot
+  sudo depman -r projet-medium 20260504120000   # snapshot spécifique
 
 FORMAT deps.conf
   # commentaire
@@ -313,10 +317,29 @@ snapshot() {
 
 restore_snapshot() {
     local project="$1"
+    local snap_ts="${2:-}"   # horodatage optionnel (ex: 20260504120000)
     local pattern="$SNAPSHOT_DIR/${project//\//_}_*.snap"
     local snap_file
-    snap_file=$(ls -t $pattern 2>/dev/null | head -1)
-    [[ -z "$snap_file" ]] && handle_error 105 "Aucun snapshot trouvé pour '$project'"
+
+    if [[ -n "$snap_ts" ]]; then
+        # Snapshot spécifique demandé
+        snap_file="$SNAPSHOT_DIR/${project//\//_}_${snap_ts}.snap"
+        if [[ ! -f "$snap_file" ]]; then
+            log_error "Snapshot '$snap_ts' introuvable pour '$project'."
+            log_error "Snapshots disponibles :"
+            # shellcheck disable=SC2086
+            ls -1t $pattern 2>/dev/null \
+                | sed "s|$SNAPSHOT_DIR/||" \
+                | sed "s|${project//\//_}_||;s|\.snap||" \
+                || log_error "  (aucun snapshot trouvé)"
+            handle_error 105 "Snapshot introuvable : $snap_ts"
+        fi
+    else
+        # Dernier snapshot (comportement par défaut)
+        # shellcheck disable=SC2086
+        snap_file=$(ls -t $pattern 2>/dev/null | head -1)
+        [[ -z "$snap_file" ]] && handle_error 105 "Aucun snapshot trouvé pour '$project'"
+    fi
 
     log_info "Restauration depuis $snap_file ..."
     case "$PM" in
@@ -435,8 +458,9 @@ run_thread() {
 # ---------------------------------------------------------------------------
 run_restore() {
     local project="$1"
+    local snap_ts="${2:-}"
     [[ $EUID -ne 0 ]] && handle_error 104 "L'option -r nécessite les privilèges root"
-    restore_snapshot "$project"
+    restore_snapshot "$project" "$snap_ts"
 }
 
 # ---------------------------------------------------------------------------
@@ -446,7 +470,7 @@ main() {
     [[ $# -eq 0 ]] && { show_help; exit 101; }
 
     local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0
-    local project="" alt_log=""
+    local project="" alt_log="" snap_ts=""
 
     # Parsing des options avec getopt
     local OPTS
@@ -467,6 +491,9 @@ main() {
         esac
     done
 
+    # Argument positionnel optionnel : horodatage snapshot pour -r
+    snap_ts="${1:-}"
+
     # Vérifier qu'un projet est fourni si une action est demandée
     if (( opt_s || opt_f || opt_t || opt_r )); then
         [[ -z "$project" ]] && handle_error 101 "Paramètre <projet> manquant"
@@ -483,7 +510,7 @@ main() {
     [[ "$PM" == "unknown" ]] && handle_error 100 "Aucun gestionnaire de paquets supporté trouvé (apt/pacman/dnf/yum/zypper/apk)"
 
     # Dispatcher
-    if   (( opt_r )); then run_restore "$project"
+    if   (( opt_r )); then run_restore "$project" "$snap_ts"
     elif (( opt_s )); then run_subshell "$project"
     elif (( opt_f )); then run_fork    "$project"
     elif (( opt_t )); then run_thread  "$project"
