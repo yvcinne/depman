@@ -57,7 +57,7 @@ handle_error() {
     local code="$1"
     local msg="$2"
     log_error "[Erreur $code] $msg"
-    show_help
+    log_error "Utilisez 'depman -h' pour afficher l'aide."
     exit "$code"
 }
 
@@ -467,7 +467,7 @@ run_restore() {
 # Point d'entrée principal
 # ---------------------------------------------------------------------------
 main() {
-    [[ $# -eq 0 ]] && { show_help; exit 101; }
+    [[ $# -eq 0 ]] && { log_error "[Erreur 101] Aucune option fournie. Utilisez 'depman -h' pour afficher l'aide."; exit 101; }
 
     local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0
     local project="" alt_log="" snap_ts=""
