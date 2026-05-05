@@ -3,7 +3,8 @@
 `depman` est un outil en ligne de commande écrit en **Bash 5.x** qui automatise
 la vérification et l'installation des dépendances d'un projet à partir d'un
 fichier `deps.conf`. Il propose trois modes d'exécution (subshell, fork,
-threads C) et maintient un journal horodaté de toutes les actions.
+threads C), un affichage coloré, un mode simulation et maintient un journal
+horodaté de toutes les actions.
 
 > **Distros supportées :** Debian/Ubuntu (`apt`) • Arch (`pacman`) • Fedora/RHEL (`dnf`) • CentOS ancien (`yum`) • openSUSE (`zypper`) • Alpine (`apk`)
 
@@ -19,8 +20,9 @@ threads C) et maintient un journal horodaté de toutes les actions.
 6. [Codes d'erreur](#codes-derreur)
 7. [Journalisation](#journalisation)
 8. [Snapshots](#snapshots)
-9. [Scénarios de test](#scénarios-de-test)
-10. [Architecture](#architecture)
+9. [Affichage coloré](#affichage-coloré)
+10. [Scénarios de test](#scénarios-de-test)
+11. [Architecture](#architecture)
 
 ---
 
@@ -91,11 +93,30 @@ depman -f projet-medium
 # Vérification ultra-rapide en mode thread (C + pthreads)
 depman -t projet-heavy
 
+# Simulation sans aucune modification (dry-run)
+depman -n -s projet-light
+depman --dry-run -f projet-medium
+
 # Log alternatif (sans root)
 depman -l ./my.log -s projet-light
 
 # Restauration de l'environnement (root requis)
 sudo depman -r projet-medium
+```
+
+### Exemple de sortie
+
+```
+★ MODE DRY-RUN activé — aucune modification ne sera effectuée
+2026-05-05-22-20-30:root:INFOS:Gestionnaire de paquets détecté : pacman
+2026-05-05-22-20-30:root:INFOS:=== Mode subshell pour 'mon-projet' ===
+[1/4] Vérification de python...
+2026-05-05-22-20-30:root:INFOS:Vérification de python >= 3.8 -> OK (v3.14)
+[2/4] Vérification de curl...
+2026-05-05-22-20-30:root:INFOS:curl absent, installation en cours...
+[DRY-RUN] curl                 serait installé ou mis à jour
+[3/4] Vérification de git...
+...
 ```
 
 ---
@@ -130,9 +151,10 @@ make >= 4.0
 | `-s <projet>` | **Mode subshell** — vérification séquentielle dans un sous-shell (isolation des variables) |
 | `-f <projet>` | **Mode fork** — un processus fils par paquet, vérification parallèle |
 | `-t <projet>` | **Mode thread** — compile et exécute `depman_thread.c` (POSIX pthreads) |
-| `-l <fichier>` | Chemin alternatif pour le fichier de log |
-| `-r <projet>` | **Restauration** — rétablit l'état dpkg depuis le dernier snapshot (**root requis**) |
-| `-h` | Affiche l'aide complète |
+| `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
+| `-r <projet> [horodatage]` | **Restauration** — rétablit l'état depuis le dernier snapshot (**root requis**) |
+| `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
+| `-h` / `--help` | Affiche l'aide complète |
 
 ---
 
@@ -181,6 +203,7 @@ yyyy-mm-dd-hh-mm-ss:username:ERROR:message
 Un snapshot capture l'état complet des paquets installés.
 
 - **Création automatique** à la fin de chaque exécution réussie (`-s`, `-f`, `-t`).
+- **Ignoré** en mode `--dry-run` (aucune écriture).
 - **Emplacement :** `/var/log/depman/snapshots/<projet>_YYYYMMDDHHMMSS.snap`
 - **Restauration :** `sudo depman -r <projet>` (code 105 si aucun snapshot trouvé)
 
@@ -190,6 +213,24 @@ Un snapshot capture l'état complet des paquets installés.
 | `pacman` | `pacman -Qqe` | `pacman -S` |
 | `dnf/yum/zypper` | `rpm -qa` | Informatif uniquement |
 | `apk` | `apk info` | Informatif uniquement |
+
+---
+
+## Affichage coloré
+
+Les couleurs sont **auto-détectées** via `tput` au démarrage. Elles sont
+désactivées automatiquement si le terminal ne les supporte pas (pipes, scripts,
+SSH sans couleur, etc.).
+
+| Couleur | Signification |
+|---------|---------------|
+| 🟢 Vert | Message `INFOS` — opération réussie |
+| 🔴 Rouge | Message `ERROR` — erreur ou paquet introuvable |
+| 🟡 Jaune | Bannière `DRY-RUN` et notices de simulation |
+| 🔵 Cyan | Indicateur de progression `[X/N]` |
+
+> **Note :** Le fichier `history.log` est toujours écrit en **texte brut**
+> (sans codes ANSI), quel que soit l'état du terminal.
 
 ---
 
@@ -238,9 +279,25 @@ depman -t projet-heavy
 **Résultat attendu :**
 - `depman_thread.c` compilé automatiquement
 - 10+ threads simultanés lancés par `depman_thread`
-- Rapport de temps (`time`) affiché
+- Progression `[X/N]` affichée lors du traitement des résultats
 - Snapshot complet de l'environnement
 - Mode thread plus rapide que fork sur 10+ paquets
+
+---
+
+### Scénario 4 — Simulation (dry-run)
+
+```bash
+depman -n -s projet-light
+depman --dry-run -f projet-medium
+```
+
+**Résultat attendu :**
+- Bannière jaune `★ MODE DRY-RUN activé` au démarrage
+- Progression `[X/N]` affichée normalement
+- Paquets manquants signalés avec `[DRY-RUN]` au lieu d'être installés
+- **Aucun paquet installé**, aucun snapshot créé
+- Entrées `[DRY-RUN]` enregistrées dans `history.log`
 
 ---
 
@@ -277,10 +334,11 @@ depman/
 | `detect_pm()` | Détecte le gestionnaire de paquets (`apt`/`pacman`/`dnf`/`yum`/`zypper`/`apk`) |
 | `parse_conf()` | Lit et parse `deps.conf` |
 | `check_dep()` | Vérifie si un paquet est installé et sa version (distro-agnostique) |
-| `install_dep()` | Installe un paquet via le bon gestionnaire (distro-agnostique) |
-| `snapshot()` | Capture l'état courant des paquets |
+| `install_dep()` | Installe un paquet via le bon gestionnaire — ignoré en `--dry-run` |
+| `snapshot()` | Capture l'état courant des paquets — ignoré en `--dry-run` |
 | `restore_snapshot()` | Restaure depuis un snapshot |
-| `log()` / `log_info()` / `log_error()` | Journalisation horodatée |
+| `show_progress()` | Affiche le compteur `[X/N]` avant chaque vérification |
+| `log()` / `log_info()` / `log_error()` | Journalisation horodatée colorée (terminal) + brute (fichier) |
 | `handle_error()` | Gestion centralisée des erreurs |
 | `show_help()` | Affichage de la documentation |
 | `compile_thread_prog()` | Compilation automatique du programme C |
