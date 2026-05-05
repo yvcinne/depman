@@ -21,8 +21,9 @@ horodaté de toutes les actions.
 7. [Journalisation](#journalisation)
 8. [Snapshots](#snapshots)
 9. [Affichage coloré](#affichage-coloré)
-10. [Scénarios de test](#scénarios-de-test)
-11. [Architecture](#architecture)
+10. [gen-deps — Générer deps.conf automatiquement](#gen-deps--générer-depsconf-automatiquement)
+11. [Scénarios de test](#scénarios-de-test)
+12. [Architecture](#architecture)
 
 ---
 
@@ -298,6 +299,96 @@ depman --dry-run -f projet-medium
 - Paquets manquants signalés avec `[DRY-RUN]` au lieu d'être installés
 - **Aucun paquet installé**, aucun snapshot créé
 - Entrées `[DRY-RUN]` enregistrées dans `history.log`
+
+---
+
+## gen-deps — Générer deps.conf automatiquement
+
+`gen-deps` est un script Bash fourni avec depman qui **génère automatiquement
+un fichier `deps.conf`** à partir des paquets déjà installés sur votre machine.
+Il lit la version installée via votre gestionnaire de paquets — aucun accès
+réseau requis.
+
+### Installation globale (recommandé)
+
+```bash
+# Depuis le répertoire depman/ cloné
+sudo cp gen-deps /usr/local/bin/gen-deps
+sudo chmod +x /usr/local/bin/gen-deps
+
+# Vérification
+gen-deps --help 2>/dev/null || gen-deps   # génère deps.conf dans le dossier courant
+```
+
+Sans installation globale, appelez-le avec son chemin relatif : `./gen-deps`.
+
+### Utilisation
+
+```bash
+# 1. Dans le dossier courant — génère ./deps.conf avec les outils courants
+gen-deps
+
+# 2. Cibler un dossier projet — génère mon-projet/deps.conf
+gen-deps mon-projet
+
+# 3. Spécifier exactement les paquets à inclure
+gen-deps mon-projet git curl gcc make python3
+
+# 4. Depuis un projet existant, sans créer de sous-dossier
+cd ~/projects/mon-app
+gen-deps . git nodejs npm python3
+```
+
+### Paquets par défaut (si aucun n'est fourni)
+
+```
+git  curl  wget  python3  nodejs  gcc  make  cmake
+unzip  tar  pkg-config  build-essential
+```
+
+### Comment il récupère les versions
+
+`gen-deps` interroge la **base de données locale** de votre gestionnaire de paquets —
+aucun appel réseau n'est effectué.
+
+| Gestionnaire | Commande utilisée |
+|---|---|
+| `apt` | `dpkg -l <pkg>` |
+| `pacman` | `pacman -Q <pkg>` |
+| `dnf / yum / zypper` | `rpm -q --qf '%{VERSION}' <pkg>` |
+| `apk` | `apk info <pkg>` |
+
+Si un paquet demandé **n'est pas installé**, il est ajouté en commentaire :
+```ini
+# nodejs  (non installé — version minimale à définir manuellement)
+```
+
+### Exemple de fichier généré
+
+```ini
+# Fichier de configuration des dépendances
+# Généré automatiquement le 2026-05-05 22:29:42 par gen-deps
+# Format : nom_paquet >= version_minimale
+
+[project:mon-app]
+git                  >= 2.54.0
+curl                 >= 8.20.0
+python3              >= 3.14.4
+# nodejs  (non installé — version minimale à définir manuellement)
+```
+
+### Workflow recommandé
+
+```bash
+# 1. Générer le deps.conf dans votre projet
+gen-deps mon-projet git curl python3
+
+# 2. Vérifier ce qui serait installé sur une autre machine (dry-run)
+depman -n -s mon-projet
+
+# 3. Lancer l'installation réelle
+sudo depman -s mon-projet
+```
 
 ---
 
