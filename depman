@@ -15,6 +15,21 @@ SNAPSHOT_DIR="$LOG_DIR/snapshots"
 THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
 THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
 PM=""   # Détecté au démarrage par detect_pm()
+DRY_RUN=0  # Mode simulation (--dry-run)
+
+# ---------------------------------------------------------------------------
+# Couleurs (désactivées si le terminal ne les supporte pas)
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]] && tput colors &>/dev/null 2>&1 && (( $(tput colors 2>/dev/null) >= 8 )); then
+    C_GRN="\033[0;32m"   # Vert  — succès
+    C_YEL="\033[0;33m"   # Jaune — dry-run
+    C_RED="\033[0;31m"   # Rouge — erreur
+    C_CYN="\033[0;36m"   # Cyan  — progression
+    C_BLD="\033[1m"      # Gras
+    C_RST="\033[0m"      # Reset
+else
+    C_GRN="" C_YEL="" C_RED="" C_CYN="" C_BLD="" C_RST=""
+fi
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -27,14 +42,33 @@ log() {
     local user
     user=$(whoami)
     local entry="$ts:$user:$type:$msg"
-    # Redirection simultanée terminal + fichier log
-    # Créer le répertoire log si nécessaire (best effort)
     mkdir -p "$LOG_DIR" 2>/dev/null || true
-    echo "$entry" | tee -a "$LOG_FILE"
+    # Écriture brute dans le fichier (sans codes couleur)
+    echo "$entry" >> "$LOG_FILE"
+    # Affichage coloré dans le terminal
+    case "$type" in
+        INFOS) printf "${C_GRN}%s${C_RST}\n" "$entry" ;;
+        ERROR) printf "${C_RED}%s${C_RST}\n" "$entry" >&2 ;;
+        *)     printf "%s\n" "$entry" ;;
+    esac
 }
 
 log_info()  { log "INFOS" "$1"; }
 log_error() { log "ERROR" "$1" >&2; }
+
+# ---------------------------------------------------------------------------
+# Progression [X/N]
+# ---------------------------------------------------------------------------
+PROG_CURRENT=0
+PROG_TOTAL=0
+
+show_progress() {
+    local pkg="$1"
+    PROG_CURRENT=$(( PROG_CURRENT + 1 ))
+    (( PROG_TOTAL > 0 )) || return 0
+    printf "${C_CYN}[%d/%d]${C_RST} ${C_BLD}Vérification de %s...${C_RST}\n" \
+        "$PROG_CURRENT" "$PROG_TOTAL" "$pkg"
+}
 
 # ---------------------------------------------------------------------------
 # Détection du gestionnaire de paquets
@@ -80,6 +114,7 @@ OPTIONS
                           Si [horodatage] est fourni, restaure ce snapshot précis.
                           Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
                           Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
+  -n / --dry-run          Mode simulation — affiche ce qui serait installé sans rien modifier
   -h                      Affiche cette aide
 
 CODES D'ERREUR
@@ -95,6 +130,7 @@ EXEMPLES
   depman -s projet-light
   depman -f projet-medium
   depman -t projet-heavy
+  depman -n -s projet-light                     # simulation (aucune installation)
   sudo depman -r projet-medium                  # dernier snapshot
   sudo depman -r projet-medium 20260504120000   # snapshot spécifique
 
@@ -144,6 +180,8 @@ check_dep() {
     local req_ver="$2"
     local inst_ver=""
     local installed=false
+
+    show_progress "$pkg"
 
     case "$PM" in
         apt)
@@ -200,6 +238,13 @@ check_dep() {
 install_dep() {
     local pkg="$1"
     local new_ver=""
+
+    # Mode simulation : afficher sans installer
+    if (( DRY_RUN )); then
+        printf "${C_YEL}[DRY-RUN]${C_RST} %-20s serait installé ou mis à jour\n" "$pkg"
+        log_info "[DRY-RUN] $pkg serait installé ou mis à jour"
+        return 0
+    fi
 
     case "$PM" in
         apt)
@@ -382,13 +427,17 @@ compile_thread_prog() {
 run_subshell() {
     local project="$1"
     log_info "=== Mode subshell pour '$project' ==="
+    local dep_list
+    dep_list=$(parse_conf "$project")
+    PROG_TOTAL=$(echo "$dep_list" | grep -c .)
+    PROG_CURRENT=0
     (
         while IFS=' ' read -r pkg ver; do
             check_dep "$pkg" "$ver"
-        done < <(parse_conf "$project")
+        done <<< "$dep_list"
     )
     local code=$?
-    snapshot "$project"
+    (( DRY_RUN )) || snapshot "$project"
     return $code
 }
 
@@ -398,15 +447,23 @@ run_subshell() {
 run_fork() {
     local project="$1"
     log_info "=== Mode fork pour '$project' ==="
+    local dep_list
+    dep_list=$(parse_conf "$project")
+    PROG_TOTAL=$(echo "$dep_list" | grep -c .)
+    PROG_CURRENT=0
 
     local pids=()
     while IFS=' ' read -r pkg ver; do
+        PROG_CURRENT=$(( PROG_CURRENT + 1 ))
+        printf "${C_CYN}[%d/%d]${C_RST} ${C_BLD}Fork lancé pour %s...${C_RST}\n" \
+            "$PROG_CURRENT" "$PROG_TOTAL" "$pkg"
         (
+            PROG_TOTAL=0   # désactive show_progress dans le fils
             check_dep "$pkg" "$ver"
         ) &
         pids+=($!)
         log_info "Processus fils lancé pour $pkg (PID $!)"
-    done < <(parse_conf "$project")
+    done <<< "$dep_list"
 
     # Attendre tous les fils
     local exit_code=0
@@ -414,7 +471,7 @@ run_fork() {
         wait "$pid" || exit_code=$?
     done
 
-    snapshot "$project"
+    (( DRY_RUN )) || snapshot "$project"
     return $exit_code
 }
 
@@ -437,12 +494,19 @@ run_thread() {
 
     [[ ${#pkgs[@]} -eq 0 ]] && handle_error 102 "Aucune dépendance dans deps.conf"
 
+    PROG_TOTAL=${#pkgs[@]}
+    PROG_CURRENT=0
+    log_info "Lancement de $PROG_TOTAL threads en parallèle..."
+
     # Appel du programme C (vérifie la présence du paquet en parallèle)
     local results
-    results=$(time "$THREAD_BIN" "${pkgs[@]}" 2>&1)
+    results=$( { time "$THREAD_BIN" "${pkgs[@]}"; } 2>&1 | grep -v '^real\|^user\|^sys')
 
     # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
     while IFS=: read -r pkg status; do
+        PROG_CURRENT=$(( PROG_CURRENT + 1 ))
+        printf "${C_CYN}[%d/%d]${C_RST} ${C_BLD}Résultat pour %s${C_RST}\n" \
+            "$PROG_CURRENT" "$PROG_TOTAL" "$pkg"
         if [[ "$status" -eq 1 ]]; then
             log_info "$pkg : présent"
         else
@@ -451,7 +515,7 @@ run_thread() {
         fi
     done <<< "$results"
 
-    snapshot "$project"
+    (( DRY_RUN )) || snapshot "$project"
 }
 
 # ---------------------------------------------------------------------------
@@ -475,7 +539,7 @@ main() {
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:h --long help -n "depman" -- "$@") \
+    OPTS=$(getopt -o s:f:t:l:r:nh --long help,dry-run -n "depman" -- "$@") \
         || handle_error 100 "Option non reconnue"
     eval set -- "$OPTS"
 
@@ -486,6 +550,7 @@ main() {
             -t) opt_t=1; project="$2"; shift 2 ;;
             -r) opt_r=1; project="$2"; shift 2 ;;
             -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
+            -n|--dry-run) DRY_RUN=1; shift ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
@@ -504,6 +569,11 @@ main() {
 
     # Créer le répertoire de log
     mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+    # Avertissement dry-run
+    if (( DRY_RUN )); then
+        printf "${C_YEL}★ MODE DRY-RUN activé — aucune modification ne sera effectuée${C_RST}\n"
+    fi
 
     # Détecter le gestionnaire de paquets
     PM=$(detect_pm)
