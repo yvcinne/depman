@@ -14,13 +14,13 @@ threads C) et maintient un journal horodaté de toutes les actions.
 1. [Prérequis](#prérequis)
 2. [Installation](#installation)
 3. [Utilisation](#utilisation)
-4. [Format de deps.conf](#format-de-depsconf)
-5. [Options](#options)
-6. [Codes d'erreur](#codes-derreur)
-7. [Journalisation](#journalisation)
-8. [Snapshots](#snapshots)
-9. [Scénarios de test](#scénarios-de-test)
-10. [Architecture](#architecture)
+4. [Options](#options)
+5. [Codes d'erreur](#codes-derreur)
+6. [Journalisation](#journalisation)
+7. [Snapshots](#snapshots)
+8. [Scénarios de test](#scénarios-de-test)
+9. [Architecture](#architecture)
+10. [gen-deps — Générer deps.conf automatiquement](#gen-deps--générer-depsconf-automatiquement)
 
 ---
 
@@ -106,30 +106,7 @@ depman -l ./my.log -s projet-light
 sudo depman -r projet-medium
 ```
 
----
 
-## Format de deps.conf
-
-```ini
-# Fichier de configuration des dépendances
-# Format : nom_paquet >= version_minimale
-
-[project:monapp]
-git >= 2.30
-curl >= 7.0
-python3 >= 3.8
-nodejs >= 16.0
-gcc >= 9.0
-make >= 4.0
-```
-
-**Règles de parsing :**
-- Lignes commençant par `#` → ignorées (commentaires)
-- Lignes entre `[...]` → ignorées (sections)
-- Lignes vides → ignorées
-- Chaque ligne valide : `<paquet> >= <version>`
-
----
 
 ## Options
 
