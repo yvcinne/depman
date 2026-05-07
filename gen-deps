@@ -30,6 +30,15 @@ detect_pm() {
 PM=$(detect_pm)
 
 # ---------------------------------------------------------------------------
+# Nom du paquet Python selon le gestionnaire de paquets
+# (Arch utilise 'python', les autres utilisent 'python3')
+# ---------------------------------------------------------------------------
+case "$PM" in
+    pacman) PYTHON_PKG="python" ;;
+    *)      PYTHON_PKG="python3" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Récupère la version installée d'un paquet selon le gestionnaire de paquets
 # ---------------------------------------------------------------------------
 get_version() {
@@ -60,8 +69,8 @@ get_version() {
 # Paquets par défaut si aucun n'est fourni
 # ---------------------------------------------------------------------------
 DEFAULT_PACKAGES=(
-    git curl wget python3 nodejs gcc make cmake
-    unzip tar pkg-config build-essential
+    git curl wget "$PYTHON_PKG" gcc make cmake
+    tar unzip rsync openssl bash
 )
 
 # ---------------------------------------------------------------------------
