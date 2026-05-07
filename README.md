@@ -304,4 +304,207 @@ depman/
 
 ---
 
+## gen-deps — Générer deps.conf automatiquement
+
+`gen-deps` est un script Bash companion de `depman`. Il **inspecte les paquets
+installés sur votre machine** et génère automatiquement un fichier `deps.conf`
+prêt à l'emploi. Aucun accès réseau n'est requis — tout est lu depuis la base
+de données locale de votre gestionnaire de paquets.
+
+---
+
+### Installation
+
+#### Utilisation locale (depuis le dépôt cloné)
+
+```bash
+cd depman/
+./gen-deps
+```
+
+#### Installation globale (recommandée)
+
+```bash
+sudo cp gen-deps /usr/local/bin/gen-deps
+sudo chmod +x /usr/local/bin/gen-deps
+```
+
+> Une fois installé globalement, remplacez `./gen-deps` par `gen-deps` dans
+> tous les exemples ci-dessous.
+
+---
+
+### Syntaxe
+
+```
+gen-deps [<projet>] [paquet1 paquet2 ...]
+```
+
+| Argument | Obligatoire | Description |
+|----------|-------------|-------------|
+| `<projet>` | Non | Répertoire cible où `deps.conf` sera créé. Si omis, le fichier est généré dans le dossier courant (`./deps.conf`). |
+| `paquet1 paquet2 ...` | Non | Paquets à inclure. Si omis, la liste par défaut est utilisée. |
+
+---
+
+### Cas d'utilisation
+
+#### 1. Sans argument — dossier courant, paquets par défaut
+
+```bash
+./gen-deps
+```
+
+Génère `./deps.conf` avec tous les paquets de la liste par défaut qui sont
+installés sur votre système.
+
+**Quand l'utiliser :** Démarrage rapide, environnement de développement
+générique.
+
+---
+
+#### 2. Nom de projet seulement
+
+```bash
+./gen-deps mon-projet
+```
+
+Crée le dossier `mon-projet/` s'il n'existe pas, puis génère
+`mon-projet/deps.conf` avec les paquets par défaut.
+
+**Quand l'utiliser :** Initialiser rapidement la configuration d'un nouveau
+projet.
+
+---
+
+#### 3. Projet + paquets explicites
+
+```bash
+./gen-deps mon-projet git curl gcc make python
+```
+
+Génère `mon-projet/deps.conf` avec **uniquement** les paquets listés.
+Chaque version est lue depuis la base locale du gestionnaire de paquets.
+
+**Quand l'utiliser :** Vous connaissez exactement les dépendances de votre
+projet et voulez un `deps.conf` minimal et précis.
+
+---
+
+#### 4. Dossier courant (`.`) + paquets explicites
+
+```bash
+cd ~/projects/mon-app
+gen-deps . git curl python openssl
+```
+
+Génère `./deps.conf` dans le dossier courant sans créer de sous-dossier.
+
+**Quand l'utiliser :** Vous êtes déjà dans le répertoire de votre projet.
+
+
+---
+
+#### 5. Paquet non installé sur le système
+
+Si un paquet demandé **n'est pas installé**, il apparaît en commentaire :
+
+```ini
+# nodejs  (non installé — version minimale à définir manuellement)
+```
+
+Vous pouvez compléter manuellement la version minimale requise avant de
+partager le fichier avec votre équipe.
+
+---
+
+### Paquets par défaut
+
+Utilisés lorsqu'aucun paquet n'est fourni en argument :
+
+```
+git  curl  wget  python (ou python3)  gcc  make  cmake
+tar  unzip  rsync  openssl  bash
+```
+
+> **Détection cross-distro :** `gen-deps` choisit automatiquement le bon
+> nom du paquet Python selon le gestionnaire détecté :
+>
+> | Gestionnaire | Paquet utilisé |
+> |---|---|
+> | `pacman` (Arch, Manjaro…) | `python` |
+> | `apt`, `dnf`, `yum`, `zypper`, `apk` | `python3` |
+
+---
+
+### Récupération des versions
+
+`gen-deps` interroge uniquement la base de données **locale** — pas de
+requête réseau.
+
+| Gestionnaire | Commande utilisée |
+|---|---|
+| `apt` | `dpkg -l <pkg>` → champ version |
+| `pacman` | `pacman -Q <pkg>` → champ version |
+| `dnf / yum / zypper` | `rpm -q --qf '%{VERSION}' <pkg>` |
+| `apk` | `apk info <pkg>` → première ligne |
+
+---
+
+### Format du fichier généré
+
+```ini
+# Fichier de configuration des dépendances
+# Généré automatiquement le YYYY-MM-DD HH:MM:SS par gen-deps
+# Format : nom_paquet >= version_minimale
+
+[project:<nom-projet>]
+git                  >= 2.54.0
+curl                 >= 8.20.0
+wget                 >= 1.25.0
+python               >= 3.14.4
+gcc                  >= 16.1.1
+make                 >= 4.4.1
+cmake                >= 4.3.2
+tar                  >= 1.35
+unzip                >= 6.0
+rsync                >= 3.4.2
+openssl              >= 3.6.2
+bash                 >= 5.3.9
+# build-essential  (non installé — version minimale à définir manuellement)
+```
+
+**Règles de format (compatibles avec le parser de `depman`) :**
+
+| Élément | Règle |
+|---------|-------|
+| Commentaires | Lignes commençant par `#` → ignorées par `depman` |
+| Sections | Lignes entre `[...]` → ignorées par `depman` |
+| Lignes vides | Ignorées par `depman` |
+| Dépendance valide | `<paquet> >= <version>` (opérateur `>=` obligatoire) |
+| Alignement | Nom du paquet sur 20 caractères, puis `>= version` |
+| En-tête | Horodatage automatique à la génération |
+
+---
+
+### Workflow recommandé
+
+```bash
+# 1 — Générer le deps.conf depuis votre machine de référence
+./gen-deps mon-projet git curl python gcc make
+
+# 2 — Ouvrir et vérifier le fichier généré
+cat mon-projet/deps.conf
+
+# 3 — Simuler l'installation sur une autre machine (aucune modification)
+depman -n -s mon-projet
+
+# 4 — Lancer l'installation réelle
+sudo depman -s mon-projet
+
+# 5 — Vérifier le snapshot créé automatiquement
+ls /var/log/depman/snapshots/
+```
+
+---
 
