@@ -60,6 +60,9 @@ chmod +x depman
 # (Optionnel) Installer globalement
 sudo cp depman /usr/local/bin/
 
+# Compiler et installer le programme thread (requis pour l'option -t)
+sudo gcc -o /usr/local/bin/depman_thread depman_thread.c -lpthread
+
 # Créer le répertoire de log (ou utiliser -l pour un chemin alternatif)
 sudo mkdir -p /var/log/depman
 sudo chmod 755 /var/log/depman
@@ -68,6 +71,11 @@ sudo chmod 755 /var/log/depman
 > **Note :** Le répertoire `/var/log/depman/` est créé automatiquement au
 > premier lancement si les droits le permettent. Sinon, utilisez `-l` pour
 > spécifier un chemin accessible sans root.
+
+> **Important :** Lorsque `depman` est installé dans `/usr/local/bin/`, il
+> cherche le binaire `depman_thread` **dans le même répertoire**. La commande
+> `gcc` ci-dessus compile `depman_thread.c` et place le binaire résultant
+> au bon endroit. Sans cette étape, l'option `-t` échoue avec l'erreur 106.
 
 ---
 
@@ -146,7 +154,7 @@ make >= 4.0
 | 103 | Paquet introuvable dans les dépôts | Le gestionnaire de paquets détecté ne trouve pas le paquet |
 | 104 | Privilèges root requis | Option `-r` sans `sudo`/root |
 | 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` |
-| 106 | Compilation `depman_thread.c` échouée | `gcc` retourne un code non-zéro |
+| 106 | `depman_thread.c` introuvable **ou** compilation échouée | Binaire absent de `/usr/local/bin/` ou `gcc` retourne un code non-zéro — voir [Installation](#installation) |
 
 Chaque erreur affiche l'aide complète (`-h`) puis quitte avec le code correspondant.
 
@@ -229,16 +237,21 @@ depman -f projet-medium
 
 ### Scénario 3 — Lourd (thread)
 
+> **Prérequis :** `depman_thread` doit être compilé et installé (voir [Installation](#installation)).
+
 ```bash
+# Si depman est installé globalement, compiler depman_thread d'abord :
+sudo gcc -o /usr/local/bin/depman_thread depman_thread.c -lpthread
+
 mkdir -p projet-heavy
 cp deps.conf projet-heavy/deps.conf   # 10+ paquets
-depman -t projet-heavy
+sudo depman -t projet-heavy
 ```
 
 **Résultat attendu :**
-- `depman_thread.c` compilé automatiquement
+- `depman_thread` trouvé dans `/usr/local/bin/` et exécuté directement
 - 10+ threads simultanés lancés par `depman_thread`
-- Rapport de temps (`time`) affiché
+- Progression `[X/N]` affichée lors du traitement des résultats
 - Snapshot complet de l'environnement
 - Mode thread plus rapide que fork sur 10+ paquets
 
