@@ -114,10 +114,11 @@ sudo depman -r projet-medium
 |--------|-------------|
 | `-s <projet>` | **Mode subshell** — vérification séquentielle dans un sous-shell (isolation des variables) |
 | `-f <projet>` | **Mode fork** — un processus fils par paquet, vérification parallèle |
-| `-t <projet>` | **Mode thread** — compile et exécute `depman_thread.c` (POSIX pthreads) |
-| `-l <fichier>` | Chemin alternatif pour le fichier de log |
-| `-r <projet>` | **Restauration** — rétablit l'état dpkg depuis le dernier snapshot (**root requis**) |
-| `-h` | Affiche l'aide complète |
+| `-t <projet>` | **Mode thread** — exécute `depman_thread` (C + POSIX pthreads) — voir [Installation](#installation) |
+| `-r <projet> [horodatage]` | **Restauration** — restaure depuis le dernier snapshot ou un snapshot précis (**root requis**) |
+| `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
+| `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
+| `-h` / `--help` | Affiche l'aide complète |
 
 ---
 
