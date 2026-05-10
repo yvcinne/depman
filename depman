@@ -15,7 +15,8 @@ LOG_FILE="$LOG_DIR/history.log"
 SNAPSHOT_DIR="$LOG_DIR/snapshots"
 THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
 THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
-PM=""   # Détecté au démarrage par detect_pm()
+PM=""        # Détecté au démarrage par detect_pm()
+DRY_RUN=0   # Mode simulation (1 = aucune modification système)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -72,22 +73,23 @@ USAGE
   depman [OPTIONS] <projet>
 
 OPTIONS
-  -s <projet>             Mode subshell  — vérification séquentielle dans un sous-shell
-  -f <projet>             Mode fork      — vérification parallèle par processus fils
-  -t <projet>             Mode thread    — vérification parallèle via depman_thread (C+pthreads)
-  -l <répertoire>         Répertoire de stockage du fichier de journalisation (défaut: /var/log/depman/)
-                          Le fichier history.log sera créé dans ce répertoire.
+  -s <projet>               Mode subshell  — vérification séquentielle dans un sous-shell
+  -f <projet>               Mode fork      — vérification parallèle par processus fils
+  -t <projet>               Mode thread    — vérification parallèle via depman_thread (C+pthreads)
+  -l <répertoire>           Répertoire de stockage du fichier de journalisation (défaut: /var/log/depman/)
+                            Le fichier history.log sera créé dans ce répertoire.
   -r <projet> [horodatage]  Restauration — restaure depuis le dernier snapshot (root requis)
-                          Si [horodatage] est fourni, restaure ce snapshot précis.
-                          Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
-                          Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
-  -h                      Affiche cette aide
+                            Si [horodatage] est fourni, restaure ce snapshot précis.
+                            Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
+                            Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
+  -n, --dry-run             Mode simulation — affiche ce qui serait fait sans modifier le système
+  -h, --help                Affiche cette aide
 
 CODES D'ERREUR
   100  Option inexistante
   101  Paramètre <projet> manquant
   102  Fichier deps.conf introuvable
-  103  Paquet introuvable dans les dépôts apt
+  103  Paquet introuvable dans les dépôts
   104  Privilèges root requis
   105  Snapshot introuvable
   106  Compilation de depman_thread.c échouée
@@ -96,6 +98,7 @@ EXEMPLES
   depman -s projet-light
   depman -f projet-medium
   depman -t projet-heavy
+  depman -n -s projet-light                     # simulation (aucune modif)
   sudo depman -r projet-medium                  # dernier snapshot
   sudo depman -r projet-medium 20260504120000   # snapshot spécifique
 
@@ -189,12 +192,20 @@ check_dep() {
         if version_ge "$inst_ver" "$req_ver"; then
             log_info "Vérification de $pkg >= $req_ver -> OK (v$inst_ver)"
         else
-            log_info "$pkg installé (v$inst_ver) mais version insuffisante (>= $req_ver requis). Mise à jour..."
-            install_dep "$pkg"
+            if (( DRY_RUN )); then
+                log_info "[DRY-RUN] $pkg installé (v$inst_ver) mais insuffisant (>= $req_ver requis) — mise à jour ignorée"
+            else
+                log_info "$pkg installé (v$inst_ver) mais version insuffisante (>= $req_ver requis). Mise à jour..."
+                install_dep "$pkg"
+            fi
         fi
     else
-        log_info "$pkg absent, installation en cours..."
-        install_dep "$pkg"
+        if (( DRY_RUN )); then
+            log_info "[DRY-RUN] $pkg absent — installation ignorée"
+        else
+            log_info "$pkg absent, installation en cours..."
+            install_dep "$pkg"
+        fi
     fi
 }
 
@@ -299,6 +310,12 @@ parse_conf() {
 # ---------------------------------------------------------------------------
 snapshot() {
     local project="$1"
+
+    if (( DRY_RUN )); then
+        log_info "[DRY-RUN] Snapshot ignoré (mode simulation)"
+        return 0
+    fi
+
     mkdir -p "$SNAPSHOT_DIR"
     local snap_file="$SNAPSHOT_DIR/${project//\//_}_$(date +%Y%m%d%H%M%S).snap"
 
@@ -440,15 +457,22 @@ run_thread() {
 
     # Appel du programme C (vérifie la présence du paquet en parallèle)
     local results
-    results=$(time "$THREAD_BIN" "${pkgs[@]}" 2>&1)
+    results=$("$THREAD_BIN" "${pkgs[@]}" 2>&1)
 
     # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
+    local total=${#pkgs[@]}
+    local idx=0
     while IFS=: read -r pkg status; do
+        (( idx++ )) || true
         if [[ "$status" -eq 1 ]]; then
-            log_info "$pkg : présent"
+            log_info "[$idx/$total] $pkg : présent"
         else
-            log_info "$pkg : absent — installation en cours..."
-            install_dep "$pkg"
+            if (( DRY_RUN )); then
+                log_info "[$idx/$total] [DRY-RUN] $pkg : absent — installation ignorée"
+            else
+                log_info "[$idx/$total] $pkg : absent — installation en cours..."
+                install_dep "$pkg"
+            fi
         fi
     done <<< "$results"
 
@@ -476,7 +500,7 @@ main() {
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:h --long help -n "depman" -- "$@") \
+    OPTS=$(getopt -o s:f:t:l:r:nh --long dry-run,help -n "depman" -- "$@") \
         || handle_error 100 "Option non reconnue"
     eval set -- "$OPTS"
 
@@ -487,6 +511,7 @@ main() {
             -t) opt_t=1; project="$2"; shift 2 ;;
             -r) opt_r=1; project="$2"; shift 2 ;;
             -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
+            -n|--dry-run) DRY_RUN=1; shift ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
@@ -508,6 +533,7 @@ main() {
 
     # Détecter le gestionnaire de paquets
     PM=$(detect_pm)
+    (( DRY_RUN )) && log_info "=== MODE SIMULATION (--dry-run) — aucune modification ne sera effectuée ==="
     log_info "Gestionnaire de paquets détecté : $PM"
     [[ "$PM" == "unknown" ]] && handle_error 100 "Aucun gestionnaire de paquets supporté trouvé (apt/pacman/dnf/yum/zypper/apk)"
 
