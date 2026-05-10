@@ -508,6 +508,10 @@ run_thread() {
 run_restore() {
     local project="$1"
     local snap_ts="${2:-}"
+    if (( DRY_RUN )); then
+        log_info "[DRY-RUN] Restauration de '$project' ignorée (mode simulation)"
+        return 0
+    fi
     [[ $EUID -ne 0 ]] && handle_error 104 "L'option -r nécessite les privilèges root"
     restore_snapshot "$project" "$snap_ts"
 }
