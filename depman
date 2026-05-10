@@ -282,29 +282,58 @@ install_dep() {
 }
 
 # ---------------------------------------------------------------------------
-# Parsing de deps.conf
+# ---------------------------------------------------------------------------
+# Recherche (récursive si nécessaire) des fichiers deps.conf dans un projet
+# ---------------------------------------------------------------------------
+find_conf_files() {
+    local project="$1"
+    local root_conf="$project/deps.conf"
+
+    if [[ -f "$root_conf" ]]; then
+        # Cas normal : deps.conf à la racine du projet
+        echo "$root_conf"
+    else
+        # Recherche récursive dans tous les sous-dossiers
+        find "$project" -name "deps.conf" -type f 2>/dev/null | sort
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Parsing de deps.conf (supporte plusieurs fichiers trouvés récursivement)
 # ---------------------------------------------------------------------------
 parse_conf() {
     local project="$1"
-    local conf_file="$project/deps.conf"
 
-    # Erreur 102 si fichier absent
-    [[ ! -f "$conf_file" ]] && handle_error 102 "deps.conf introuvable dans '$project'"
+    # Collecter tous les deps.conf trouvés
+    local conf_files=()
+    mapfile -t conf_files < <(find_conf_files "$project")
 
-    # Lire les dépendances (ignorer commentaires, sections, lignes vides)
-    while IFS= read -r line; do
-        # Ignorer commentaires et sections
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ "$line" =~ ^[[:space:]]*\[ ]] && continue
-        [[ -z "${line// }" ]] && continue
+    # Erreur 102 si aucun fichier trouvé
+    if [[ ${#conf_files[@]} -eq 0 ]]; then
+        handle_error 102 "Aucun deps.conf trouvé dans '$project' (ni en recherche récursive)"
+    fi
 
-        # Parser : paquet >= version
-        if [[ "$line" =~ ^([a-zA-Z0-9_+.-]+)[[:space:]]*\>=[[:space:]]*([0-9][0-9.]*)$ ]]; then
-            local pkg="${BASH_REMATCH[1]}"
-            local ver="${BASH_REMATCH[2]}"
-            echo "$pkg $ver"
-        fi
-    done < "$conf_file"
+    if [[ ${#conf_files[@]} -gt 1 ]]; then
+        log_info "${#conf_files[@]} fichiers deps.conf trouvés — traitement de tous"
+    fi
+
+    # Lire et fusionner toutes les dépendances
+    for conf_file in "${conf_files[@]}"; do
+        log_info "Lecture de $conf_file"
+        while IFS= read -r line; do
+            # Ignorer commentaires, sections et lignes vides
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ "$line" =~ ^[[:space:]]*\[ ]] && continue
+            [[ -z "${line// }" ]] && continue
+
+            # Parser : paquet >= version
+            if [[ "$line" =~ ^([a-zA-Z0-9_+.-]+)[[:space:]]*\>=[[:space:]]*([0-9][0-9.]*)$ ]]; then
+                local pkg="${BASH_REMATCH[1]}"
+                local ver="${BASH_REMATCH[2]}"
+                echo "$pkg $ver"
+            fi
+        done < "$conf_file"
+    done
 }
 
 # ---------------------------------------------------------------------------
