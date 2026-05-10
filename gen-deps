@@ -14,6 +14,46 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Aide
+# ---------------------------------------------------------------------------
+show_help() {
+    cat <<'EOF'
+
+USAGE
+  gen-deps [<projet>] [paquet1 paquet2 ...]
+
+ARGUMENTS
+  <projet>              Répertoire cible où deps.conf sera créé.
+                        Si omis, génère ./deps.conf dans le dossier courant.
+  paquet1 paquet2 ...   Paquets à inclure. Si omis, utilise la liste par défaut.
+
+OPTIONS
+  -h, --help            Affiche cette aide
+
+EXEMPLES
+  gen-deps                                      # deps.conf dans le dossier courant
+  gen-deps mon-projet                           # mon-projet/deps.conf, paquets par défaut
+  gen-deps mon-projet git curl gcc              # paquets explicites
+  gen-deps . git curl python openssl            # dossier courant, paquets explicites
+
+PAQUETS PAR DÉFAUT
+  git  curl  wget  python/python3  gcc  make  cmake  tar  unzip  rsync  openssl  bash
+
+FORMAT GÉNÉRÉ
+  [project:<nom>]
+  git                  >= 2.54.0
+  curl                 >= 8.20.0
+EOF
+}
+
+for _arg in "$@"; do
+    if [[ "$_arg" == "-h" || "$_arg" == "--help" ]]; then
+        show_help
+        exit 0
+    fi
+done
+
+# ---------------------------------------------------------------------------
 # Détection du gestionnaire de paquets
 # ---------------------------------------------------------------------------
 detect_pm() {
