@@ -370,8 +370,29 @@ restore_snapshot() {
             # shellcheck disable=SC2046
             pacman -S --noconfirm $(cat "$snap_file") &>/dev/null
             ;;
-        dnf|yum|zypper|apk)
-            log_error "Restauration automatique non supportée pour $PM — snapshot conservé à titre informatif."
+        dnf)
+            log_info "Restauration via dnf install..."
+            # shellcheck disable=SC2046
+            dnf install -y $(cat "$snap_file") &>/dev/null \
+                || log_error "Certains paquets n'ont pu être restaurés via dnf."
+            ;;
+        yum)
+            log_info "Restauration via yum install..."
+            # shellcheck disable=SC2046
+            yum install -y $(cat "$snap_file") &>/dev/null \
+                || log_error "Certains paquets n'ont pu être restaurés via yum."
+            ;;
+        zypper)
+            log_info "Restauration via zypper install..."
+            # shellcheck disable=SC2046
+            zypper install -y $(cat "$snap_file") &>/dev/null \
+                || log_error "Certains paquets n'ont pu être restaurés via zypper."
+            ;;
+        apk)
+            log_info "Restauration via apk add..."
+            # shellcheck disable=SC2046
+            apk add $(cat "$snap_file") &>/dev/null \
+                || log_error "Certains paquets n'ont pu être restaurés via apk."
             ;;
         *)
             handle_error 105 "Restauration non supportée pour : $PM"

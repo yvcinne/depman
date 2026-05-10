@@ -174,8 +174,10 @@ Un snapshot capture l'état complet des paquets installés.
 |-------------|------------------|--------------|
 | `apt` | `dpkg --get-selections` | `dpkg --set-selections` + `apt-get` |
 | `pacman` | `pacman -Qqe` | `pacman -S` |
-| `dnf/yum/zypper` | `rpm -qa` | Informatif uniquement |
-| `apk` | `apk info` | Informatif uniquement |
+| `dnf` | `rpm -qa --qf '%{NAME}'` | `dnf install -y` |
+| `yum` | `rpm -qa --qf '%{NAME}'` | `yum install -y` |
+| `zypper` | `rpm -qa --qf '%{NAME}'` | `zypper install -y` |
+| `apk` | `apk info` | `apk add` |
 
 ---
 
@@ -255,7 +257,7 @@ depman/
 | Composant | Rôle | Technologie |
 |-----------|------|-------------|
 | `depman` | Script principal, point d'entrée | Bash 5.x |
-| `depman_thread.c` | Vérification parallèle | C + POSIX pthreads |
+| `depman_thread.c` | Vérification parallèle cross-distro (apt · pacman · rpm · apk) | C + POSIX pthreads |
 | `deps.conf` | Déclaration déclarative des dépendances | Format `.conf` maison |
 | `gen-deps` | Génère `deps.conf` depuis les paquets installés | Bash 5.x |
 | `history.log` | Journal horodaté | Texte structuré |
