@@ -115,8 +115,7 @@ get_version() {
 
 # ---------------------------------------------------------------------------
 # Lecture d'un fichier requirements.txt
-# Chaque ligne non-vide et non-commentaire devient un nom de paquet.
-# Les contraintes de version (>=, ==, ~=, etc.) sont ignorées.
+# Extrait les noms des paquets et préserve les versions (==, >=, <=, etc.)
 # ---------------------------------------------------------------------------
 read_requirements() {
     local file="$1"
@@ -130,10 +129,12 @@ read_requirements() {
         [[ -z "${line//[[:space:]]/}" ]]  && continue
         # Ignorer les directives pip (-r, -i, --index-url, etc.)
         [[ "$line" =~ ^[[:space:]]*- ]]   && continue
-        # Extraire le nom : supprimer extras [extra], version et espaces
-        local pkg
-        pkg=$(printf '%s' "$line" | sed 's/\[.*//' | sed 's/[[:space:]]*[=><!~].*//' | tr -d '[:space:]')
-        [[ -n "$pkg" ]] && echo "$pkg"
+        
+        # Supprimer les extras [extra] et les espaces
+        local req
+        req=$(printf '%s' "$line" | sed 's/\[[^]]*\]//g' | tr -d '[:space:]')
+        
+        [[ -n "$req" ]] && echo "$req"
     done < "$file"
 }
 
@@ -204,12 +205,21 @@ PROJECT_NAME="${PROJECT:-$(basename "$(pwd)")}"
     echo ""
     echo "[project:$PROJECT_NAME]"
 
-    for pkg in "${PACKAGES[@]}"; do
-        ver=$(get_version "$pkg")
-        if [[ -n "$ver" ]]; then
-            printf "%-20s >= %s\n" "$pkg" "$ver"
+    for item in "${PACKAGES[@]}"; do
+        # Vérifier si l'élément contient déjà une contrainte de version (ex: paquet==1.0.0, paquet>=2.0)
+        if [[ "$item" =~ ^([^=><~!]+)([=><~!]+)(.*)$ ]]; then
+            pkg="${BASH_REMATCH[1]}"
+            op="${BASH_REMATCH[2]}"
+            ver="${BASH_REMATCH[3]}"
+            printf "%-20s %s %s\n" "$pkg" "$op" "$ver"
         else
-            echo "# $pkg  (non installé — version minimale à définir manuellement)"
+            pkg="$item"
+            ver=$(get_version "$pkg")
+            if [[ -n "$ver" ]]; then
+                printf "%-20s >= %s\n" "$pkg" "$ver"
+            else
+                echo "# $pkg  (non installé — version minimale à définir manuellement)"
+            fi
         fi
     done
 } > "$OUT"
