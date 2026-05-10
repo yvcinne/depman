@@ -17,6 +17,7 @@ THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
 THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
 PM=""        # Détecté au démarrage par detect_pm()
 DRY_RUN=0   # Mode simulation (1 = aucune modification système)
+VERSION="1.0.0"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -83,6 +84,7 @@ OPTIONS
                             Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
                             Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
   -n, --dry-run             Mode simulation — affiche ce qui serait fait sans modifier le système
+  -V, --version             Affiche la version de depman
   -h, --help                Affiche cette aide
 
 CODES D'ERREUR
@@ -521,7 +523,7 @@ main() {
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:nh --long dry-run,help -n "depman" -- "$@") \
+    OPTS=$(getopt -o s:f:t:l:r:nVh --long dry-run,version,help -n "depman" -- "$@") \
         || handle_error 100 "Option non reconnue"
     eval set -- "$OPTS"
 
@@ -533,6 +535,7 @@ main() {
             -r) opt_r=1; project="$2"; shift 2 ;;
             -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
             -n|--dry-run) DRY_RUN=1; shift ;;
+            -V|--version) echo "depman $VERSION"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
