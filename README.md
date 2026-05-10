@@ -118,6 +118,7 @@ sudo depman -r projet-medium
 | `-r <projet> [horodatage]` | **Restauration** — restaure depuis le dernier snapshot ou un snapshot précis (**root requis**) |
 | `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
 | `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
+| `-V` / `--version` | Affiche la version de `depman` et quitte |
 | `-h` / `--help` | Affiche l'aide complète |
 
 ---
@@ -209,7 +210,7 @@ depman -f projet-medium
 
 **Résultat attendu :**
 - 5+ processus fils créés (PID affichés dans les logs)
-- Paquets manquants installés via `apt-get`
+- Paquets manquants installés via le gestionnaire de paquets détecté
 - Logs mixtes `INFOS` + `ERROR` (code 103 si paquet absent des dépôts)
 - Snapshot créé dans `snapshots/`
 
@@ -229,7 +230,7 @@ sudo depman -t projet-heavy
 ```
 
 **Résultat attendu :**
-- `depman_thread` trouvé dans `/usr/local/bin/` et exécuté directement
+- `depman_thread` détecté et exécuté (cross-distro : apt · pacman · rpm · apk)
 - 10+ threads simultanés lancés par `depman_thread`
 - Progression `[X/N]` affichée lors du traitement des résultats
 - Snapshot complet de l'environnement
@@ -317,13 +318,15 @@ sudo chmod +x /usr/local/bin/gen-deps
 ### Syntaxe
 
 ```
-gen-deps [<projet>] [paquet1 paquet2 ...]
+gen-deps [<projet>] [-r <fichier>] [paquet1 paquet2 ...]
 ```
 
-| Argument | Obligatoire | Description |
+| Argument / Option | Obligatoire | Description |
 |----------|-------------|-------------|
 | `<projet>` | Non | Répertoire cible où `deps.conf` sera créé. Si omis, le fichier est généré dans le dossier courant (`./deps.conf`). |
+| `-r <fichier>` | Non | Lit les noms de paquets depuis un fichier (style `requirements.txt`). Les contraintes de version (`>=`, `==`, etc.) sont ignorées. |
 | `paquet1 paquet2 ...` | Non | Paquets à inclure. Si omis, la liste par défaut est utilisée. |
+| `-h`, `--help` | Non | Affiche l'aide et quitte (fonctionne en n'importe quelle position). |
 
 ---
 
@@ -385,7 +388,41 @@ Génère `./deps.conf` dans le dossier courant sans créer de sous-dossier.
 
 ---
 
-#### 5. Paquet non installé sur le système
+#### 5. Depuis un fichier `requirements.txt`
+
+```bash
+./gen-deps mon-projet -r requirements.txt
+```
+
+Lit les noms de paquets depuis `requirements.txt` et génère `mon-projet/deps.conf`.
+Les contraintes de version pip (`==`, `>=`, `~=`, etc.) et les commentaires sont
+automatiquement ignorés.
+
+**Exemple de fichier `requirements.txt` compatible :**
+
+```
+# outils système
+git>=2.0
+curl
+gcc==12.0
+nodejs
+```
+
+**Résultat généré :**
+
+```ini
+git                  >= 2.54.0
+curl                 >= 8.20.0
+gcc                  >= 12.3.0
+nodejs               >= 22.1.0
+```
+
+**Quand l'utiliser :** Vous avez déjà un `requirements.txt` listant vos dépendances
+système et voulez générer un `deps.conf` sans re-saisir les noms.
+
+---
+
+#### 6. Paquet non installé sur le système
 
 Si un paquet demandé **n'est pas installé**, il apparaît en commentaire :
 
@@ -473,6 +510,9 @@ bash                 >= 5.3.9
 # 1 — Générer le deps.conf depuis votre machine de référence
 ./gen-deps mon-projet git curl python gcc make
 
+# 1b — Ou depuis un requirements.txt existant
+./gen-deps mon-projet -r requirements.txt
+
 # 2 — Ouvrir et vérifier le fichier généré
 cat mon-projet/deps.conf
 
@@ -484,6 +524,9 @@ sudo depman -s mon-projet
 
 # 5 — Vérifier le snapshot créé automatiquement
 ls /var/log/depman/snapshots/
+
+# 6 — Vérifier la version installée de depman
+depman --version
 ```
 
 ---
