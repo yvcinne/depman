@@ -20,7 +20,7 @@ show_help() {
     cat <<'EOF'
 
 USAGE
-  gen-deps [<projet>] [paquet1 paquet2 ...]
+  gen-deps [<projet>] [-r <fichier>] [paquet1 paquet2 ...]
 
 ARGUMENTS
   <projet>              Répertoire cible où deps.conf sera créé.
@@ -28,13 +28,15 @@ ARGUMENTS
   paquet1 paquet2 ...   Paquets à inclure. Si omis, utilise la liste par défaut.
 
 OPTIONS
-  -h, --help            Affiche cette aide
+  -r, --requirements <fichier>   Lit les paquets depuis un fichier (style requirements.txt)
+  -h, --help                     Affiche cette aide
 
 EXEMPLES
-  gen-deps                             # deps.conf dans le dossier courant
-  gen-deps mon-projet                  # mon-projet/deps.conf, paquets par défaut
-  gen-deps mon-projet git curl gcc     # paquets explicites
-  gen-deps . git curl python openssl   # dossier courant, paquets explicites
+  gen-deps                                      # deps.conf dans le dossier courant
+  gen-deps mon-projet                           # mon-projet/deps.conf, paquets par défaut
+  gen-deps mon-projet git curl gcc              # paquets explicites
+  gen-deps . git curl python openssl            # dossier courant, paquets explicites
+  gen-deps mon-projet -r requirements.txt       # depuis un fichier requirements.txt
 
 PAQUETS PAR DÉFAUT
   git  curl  wget  python/python3  gcc  make  cmake
@@ -112,6 +114,30 @@ get_version() {
 }
 
 # ---------------------------------------------------------------------------
+# Lecture d'un fichier requirements.txt
+# Chaque ligne non-vide et non-commentaire devient un nom de paquet.
+# Les contraintes de version (>=, ==, ~=, etc.) sont ignorées.
+# ---------------------------------------------------------------------------
+read_requirements() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        echo "gen-deps: fichier requirements '${file}' introuvable" >&2
+        exit 1
+    fi
+    while IFS= read -r line; do
+        # Ignorer commentaires et lignes vides
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]]  && continue
+        # Ignorer les directives pip (-r, -i, --index-url, etc.)
+        [[ "$line" =~ ^[[:space:]]*- ]]   && continue
+        # Extraire le nom : supprimer extras [extra], version et espaces
+        local pkg
+        pkg=$(printf '%s' "$line" | sed 's/\[.*//' | sed 's/[[:space:]]*[=><!~].*//' | tr -d '[:space:]')
+        [[ -n "$pkg" ]] && echo "$pkg"
+    done < "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Paquets par défaut si aucun n'est fourni
 # ---------------------------------------------------------------------------
 DEFAULT_PACKAGES=(
@@ -124,13 +150,33 @@ DEFAULT_PACKAGES=(
 # ---------------------------------------------------------------------------
 PROJECT=""
 PACKAGES=()
+REQ_FILE=""
+
+# Pré-scan : extraire -r/--requirements (peut apparaître n'importe où)
+_filtered_args=()
+_i=1
+while [[ $_i -le $# ]]; do
+    _cur="${!_i}"
+    if [[ "$_cur" == "-r" || "$_cur" == "--requirements" ]]; then
+        (( _i++ ))
+        [[ $_i -gt $# ]] && { echo "gen-deps: option '$_cur' attend un fichier" >&2; exit 1; }
+        REQ_FILE="${!_i}"
+    else
+        _filtered_args+=("$_cur")
+    fi
+    (( _i++ ))
+done
+set -- "${_filtered_args[@]+"${_filtered_args[@]}"}"   # réinjecter sans -r
 
 if [[ $# -ge 1 && ! "$1" =~ ^- ]]; then
     PROJECT="$1"
     shift
 fi
 
-if [[ $# -ge 1 ]]; then
+if [[ -n "$REQ_FILE" ]]; then
+    mapfile -t PACKAGES < <(read_requirements "$REQ_FILE")
+    [[ ${#PACKAGES[@]} -eq 0 ]] && { echo "gen-deps: aucun paquet trouvé dans '$REQ_FILE'" >&2; exit 1; }
+elif [[ $# -ge 1 ]]; then
     PACKAGES=("$@")
 else
     PACKAGES=("${DEFAULT_PACKAGES[@]}")
