@@ -107,6 +107,7 @@ OPTIONS
                           Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
                           Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
   -n                      Mode simulation (dry-run) — affiche ce qui serait installé sans rien modifier
+  -v, --version           Affiche la version de depman
   -h                      Affiche cette aide
 
 CODES D'ERREUR
@@ -508,7 +509,7 @@ main() {
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:nh --long help,dry-run -n "depman" -- "$@") \
+    OPTS=$(getopt -o s:f:t:l:r:nhv --long help,dry-run,version -n "depman" -- "$@") \
         || handle_error 100 "Option non reconnue"
     eval set -- "$OPTS"
 
@@ -524,6 +525,7 @@ main() {
                 SNAPSHOT_DIR="$LOG_DIR/snapshots"
                 shift 2 ;;
             -n|--dry-run) opt_n=1; DRY_RUN=1; shift ;;
+            -v|--version) echo "depman v1.0.0"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
