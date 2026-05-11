@@ -422,7 +422,11 @@ run_subshell() {
         done < <(parse_conf "$project")
     )
     local code=$?
-    snapshot "$project"
+    if (( DRY_RUN )); then
+        log_info "${C_MAGENTA}${C_BOLD}[DRY-RUN]${C_RESET} ${C_MAGENTA}Snapshot ignoré (simulation)${C_RESET}"
+    else
+        snapshot "$project"
+    fi
     return $code
 }
 
@@ -448,7 +452,11 @@ run_fork() {
         wait "$pid" || exit_code=$?
     done
 
-    snapshot "$project"
+    if (( DRY_RUN )); then
+        log_info "${C_MAGENTA}${C_BOLD}[DRY-RUN]${C_RESET} ${C_MAGENTA}Snapshot ignoré (simulation)${C_RESET}"
+    else
+        snapshot "$project"
+    fi
     return $exit_code
 }
 
@@ -485,7 +493,11 @@ run_thread() {
         fi
     done <<< "$results"
 
-    snapshot "$project"
+    if (( DRY_RUN )); then
+        log_info "${C_MAGENTA}${C_BOLD}[DRY-RUN]${C_RESET} ${C_MAGENTA}Snapshot ignoré (simulation)${C_RESET}"
+    else
+        snapshot "$project"
+    fi
 }
 
 # ---------------------------------------------------------------------------
