@@ -15,7 +15,8 @@ LOG_FILE="$LOG_DIR/history.log"
 SNAPSHOT_DIR="$LOG_DIR/snapshots"
 THREAD_BIN="$(dirname "$(realpath "$0")")/depman_thread"
 THREAD_SRC="$(dirname "$(realpath "$0")")/depman_thread.c"
-PM=""   # Détecté au démarrage par detect_pm()
+PM=""       # Détecté au démarrage par detect_pm()
+DRY_RUN=0   # 1 = simulation, aucune modification du système
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -76,11 +77,12 @@ OPTIONS
   -f <projet>             Mode fork      — vérification parallèle par processus fils
   -t <projet>             Mode thread    — vérification parallèle via depman_thread (C+pthreads)
   -l <répertoire>         Répertoire de stockage du fichier de journalisation (défaut: /var/log/depman/)
-                          Le fichier history.log sera créé dans ce répertoire.
+                          Le fichier history.log et le dossier snapshots/ seront créés dans ce répertoire.
   -r <projet> [horodatage]  Restauration — restaure depuis le dernier snapshot (root requis)
                           Si [horodatage] est fourni, restaure ce snapshot précis.
                           Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
                           Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
+  -n                      Mode simulation (dry-run) — affiche ce qui serait installé sans rien modifier
   -h                      Affiche cette aide
 
 CODES D'ERREUR
@@ -201,6 +203,12 @@ check_dep() {
 install_dep() {
     local pkg="$1"
     local new_ver=""
+
+    # Mode simulation : afficher uniquement, ne rien installer
+    if (( DRY_RUN )); then
+        log_info "[DRY-RUN] $pkg serait installé"
+        return 0
+    fi
 
     case "$PM" in
         apt)
@@ -440,7 +448,7 @@ run_thread() {
 
     # Appel du programme C (vérifie la présence du paquet en parallèle)
     local results
-    results=$(time "$THREAD_BIN" "${pkgs[@]}" 2>&1)
+    results=$("$THREAD_BIN" "$PM" "${pkgs[@]}")
 
     # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
     while IFS=: read -r pkg status; do
@@ -471,12 +479,12 @@ run_restore() {
 main() {
     [[ $# -eq 0 ]] && { log_error "[Erreur 101] Aucune option fournie. Utilisez 'depman -h' pour afficher l'aide."; exit 101; }
 
-    local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0
+    local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0 opt_n=0
     local project="" alt_log="" snap_ts=""
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:h --long help -n "depman" -- "$@") \
+    OPTS=$(getopt -o s:f:t:l:r:nh --long help,dry-run -n "depman" -- "$@") \
         || handle_error 100 "Option non reconnue"
     eval set -- "$OPTS"
 
@@ -486,7 +494,12 @@ main() {
             -f) opt_f=1; project="$2"; shift 2 ;;
             -t) opt_t=1; project="$2"; shift 2 ;;
             -r) opt_r=1; project="$2"; shift 2 ;;
-            -l) opt_l=1; alt_log="$2"; LOG_FILE="${alt_log%/}/history.log"; shift 2 ;;
+            -l) opt_l=1; alt_log="$2"
+                LOG_DIR="${alt_log%/}"
+                LOG_FILE="$LOG_DIR/history.log"
+                SNAPSHOT_DIR="$LOG_DIR/snapshots"
+                shift 2 ;;
+            -n|--dry-run) opt_n=1; DRY_RUN=1; shift ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
             *) handle_error 100 "Option non reconnue : $1" ;;
