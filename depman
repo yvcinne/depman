@@ -19,6 +19,24 @@ PM=""       # Détecté au démarrage par detect_pm()
 DRY_RUN=0   # 1 = simulation, aucune modification du système
 
 # ---------------------------------------------------------------------------
+# Colors  (disabled automatically when stdout is not a terminal)
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+    C_RESET=$'\e[0m'
+    C_BOLD=$'\e[1m'
+    C_DIM=$'\e[2m'
+    C_GREEN=$'\e[32m'
+    C_YELLOW=$'\e[33m'
+    C_RED=$'\e[31m'
+    C_CYAN=$'\e[36m'
+    C_MAGENTA=$'\e[35m'
+    C_BLUE=$'\e[34m'
+else
+    C_RESET='' C_BOLD='' C_DIM='' C_GREEN='' C_YELLOW=''
+    C_RED=''   C_CYAN='' C_MAGENTA='' C_BLUE=''
+fi
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log() {
@@ -29,14 +47,20 @@ log() {
     local user
     user=$(whoami)
     local entry="$ts:$user:$type:$msg"
-    # Redirection simultanée terminal + fichier log
     # Créer le répertoire log si nécessaire (best effort)
     mkdir -p "$LOG_DIR" 2>/dev/null || true
-    echo "$entry" | tee -a "$LOG_FILE"
+    # Append raw entry to file (no color)
+    echo "$entry" >> "$LOG_FILE" 2>/dev/null || true
+    # Print colored entry to terminal
+    case "$type" in
+        INFOS) echo "${C_DIM}${ts}${C_RESET} ${C_CYAN}[INFO]${C_RESET}  $msg" ;;
+        ERROR) echo "${C_DIM}${ts}${C_RESET} ${C_RED}${C_BOLD}[ERROR]${C_RESET} $msg" >&2 ;;
+        *)     echo "${C_DIM}${ts}${C_RESET} [${type}] $msg" ;;
+    esac
 }
 
 log_info()  { log "INFOS" "$1"; }
-log_error() { log "ERROR" "$1" >&2; }
+log_error() { log "ERROR" "$1"; }
 
 # ---------------------------------------------------------------------------
 # Détection du gestionnaire de paquets
@@ -189,13 +213,13 @@ check_dep() {
 
     if $installed; then
         if version_ge "$inst_ver" "$req_ver"; then
-            log_info "Vérification de $pkg >= $req_ver -> OK (v$inst_ver)"
+            log_info "${C_GREEN}✔${C_RESET} $pkg >= $req_ver ${C_DIM}(v${inst_ver})${C_RESET}"
         else
-            log_info "$pkg installé (v$inst_ver) mais version insuffisante (>= $req_ver requis). Mise à jour..."
+            log_info "${C_YELLOW}⚠${C_RESET} $pkg v${inst_ver} < $req_ver requis — mise à jour..."
             install_dep "$pkg"
         fi
     else
-        log_info "$pkg absent, installation en cours..."
+        log_info "${C_YELLOW}↓${C_RESET} $pkg absent — installation en cours..."
         install_dep "$pkg"
     fi
 }
@@ -206,7 +230,7 @@ install_dep() {
 
     # Mode simulation : afficher uniquement, ne rien installer
     if (( DRY_RUN )); then
-        log_info "[DRY-RUN] $pkg serait installé"
+        log_info "${C_MAGENTA}${C_BOLD}[DRY-RUN]${C_RESET} ${C_MAGENTA}$pkg${C_RESET} serait installé"
         return 0
     fi
 
@@ -273,7 +297,7 @@ install_dep() {
             ;;
     esac
 
-    log_info "$pkg installé avec succès (v${new_ver:-?})"
+    log_info "${C_GREEN}✔ $pkg installé avec succès${C_RESET} ${C_DIM}(v${new_ver:-?})${C_RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -390,7 +414,7 @@ compile_thread_prog() {
 # ---------------------------------------------------------------------------
 run_subshell() {
     local project="$1"
-    log_info "=== Mode subshell pour '$project' ==="
+    log_info "${C_BOLD}${C_BLUE}═══ Mode subshell — '$project' ═══${C_RESET}"
     (
         while IFS=' ' read -r pkg ver; do
             check_dep "$pkg" "$ver"
@@ -406,7 +430,7 @@ run_subshell() {
 # ---------------------------------------------------------------------------
 run_fork() {
     local project="$1"
-    log_info "=== Mode fork pour '$project' ==="
+    log_info "${C_BOLD}${C_BLUE}═══ Mode fork — '$project' ═══${C_RESET}"
 
     local pids=()
     while IFS=' ' read -r pkg ver; do
@@ -414,7 +438,7 @@ run_fork() {
             check_dep "$pkg" "$ver"
         ) &
         pids+=($!)
-        log_info "Processus fils lancé pour $pkg (PID $!)"
+        log_info "${C_CYAN}⇢${C_RESET} Processus fils lancé pour ${C_BOLD}$pkg${C_RESET} (PID $!)"
     done < <(parse_conf "$project")
 
     # Attendre tous les fils
@@ -432,7 +456,7 @@ run_fork() {
 # ---------------------------------------------------------------------------
 run_thread() {
     local project="$1"
-    log_info "=== Mode thread pour '$project' ==="
+    log_info "${C_BOLD}${C_BLUE}═══ Mode thread — '$project' ═══${C_RESET}"
 
     compile_thread_prog
 
@@ -453,9 +477,9 @@ run_thread() {
     # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
     while IFS=: read -r pkg status; do
         if [[ "$status" -eq 1 ]]; then
-            log_info "$pkg : présent"
+            log_info "${C_GREEN}✔${C_RESET} $pkg : présent"
         else
-            log_info "$pkg : absent — installation en cours..."
+            log_info "${C_YELLOW}↓${C_RESET} $pkg : absent — installation en cours..."
             install_dep "$pkg"
         fi
     done <<< "$results"
@@ -521,7 +545,7 @@ main() {
 
     # Détecter le gestionnaire de paquets
     PM=$(detect_pm)
-    log_info "Gestionnaire de paquets détecté : $PM"
+    log_info "${C_CYAN}⚙${C_RESET} Gestionnaire de paquets détecté : ${C_BOLD}$PM${C_RESET}"
     [[ "$PM" == "unknown" ]] && handle_error 100 "Aucun gestionnaire de paquets supporté trouvé (apt/pacman/dnf/yum/zypper/apk)"
 
     # Dispatcher
