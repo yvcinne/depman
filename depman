@@ -509,16 +509,16 @@ main() {
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o s:f:t:l:r:nhv --long help,dry-run,version -n "depman" -- "$@") \
-        || handle_error 100 "Option non reconnue"
+    OPTS=$(getopt -o sftl:rnhv --long help,dry-run,version -n "depman" -- "$@") \
+        || handle_error 100 "Option inexistante"
     eval set -- "$OPTS"
 
     while true; do
         case "$1" in
-            -s) opt_s=1; project="$2"; shift 2 ;;
-            -f) opt_f=1; project="$2"; shift 2 ;;
-            -t) opt_t=1; project="$2"; shift 2 ;;
-            -r) opt_r=1; project="$2"; shift 2 ;;
+            -s) opt_s=1; shift ;;
+            -f) opt_f=1; shift ;;
+            -t) opt_t=1; shift ;;
+            -r) opt_r=1; shift ;;
             -l) opt_l=1; alt_log="$2"
                 LOG_DIR="${alt_log%/}"
                 LOG_FILE="$LOG_DIR/history.log"
@@ -528,12 +528,16 @@ main() {
             -v|--version) echo "depman v1.0.0"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
             --) shift; break ;;
-            *) handle_error 100 "Option non reconnue : $1" ;;
+            *) handle_error 100 "Option inexistante" ;;
         esac
     done
 
-    # Argument positionnel optionnel : horodatage snapshot pour -r
-    snap_ts="${1:-}"
+    if (( opt_s + opt_f + opt_t + opt_r > 1 )); then
+        handle_error 100 "Option inexistante"
+    fi
+
+    local project="${1:-}"
+    local snap_ts="${2:-}"
 
     # Vérifier qu'un projet est fourni si une action est demandée
     if (( opt_s || opt_f || opt_t || opt_r )); then
