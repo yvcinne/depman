@@ -21,37 +21,51 @@ show_help() {
 
 USAGE
   gen-deps [<projet>] [paquet1 paquet2 ...]
+  gen-deps [<projet>] -r <requirements.txt> [paquet1 paquet2 ...]
 
 ARGUMENTS
   <projet>              Répertoire cible où deps.conf sera créé.
                         Si omis, génère ./deps.conf dans le dossier courant.
-  paquet1 paquet2 ...   Paquets à inclure. Si omis, utilise la liste par défaut.
+  paquet1 paquet2 ...   Paquets système à inclure. Si omis et sans -r, utilise la liste par défaut.
 
 OPTIONS
-  -h, --help            Affiche cette aide
+  -r, --requirements <fichier>   Lit les paquets depuis un fichier requirements.txt.
+                                 Chaque paquet est résolu en priorité comme paquet système ;
+                                 si non trouvé, le préfixe python est essayé automatiquement.
+  -h, --help                     Affiche cette aide
 
 EXEMPLES
-  gen-deps                                      # deps.conf dans le dossier courant
-  gen-deps mon-projet                           # mon-projet/deps.conf, paquets par défaut
-  gen-deps mon-projet git curl gcc              # paquets explicites
-  gen-deps . git curl python openssl            # dossier courant, paquets explicites
+  gen-deps                                          # deps.conf dans le dossier courant
+  gen-deps mon-projet                               # mon-projet/deps.conf, paquets par défaut
+  gen-deps mon-projet git curl gcc                  # paquets système explicites
+  gen-deps mon-projet -r requirements.txt           # depuis requirements.txt uniquement
+  gen-deps mon-projet -r requirements.txt git curl  # requirements.txt + paquets système
 
-PAQUETS PAR DÉFAUT
+PAQUETS PAR DÉFAUT (utilisés si aucun paquet et sans -r)
   git  curl  wget  python/python3  gcc  make  cmake  tar  unzip  rsync  openssl  bash
 
 FORMAT GÉNÉRÉ
   [project:<nom>]
   git                  >= 2.54.0
-  curl                 >= 8.20.0
+  python-flask         >= 3.1.0
 EOF
 }
 
-for _arg in "$@"; do
-    if [[ "$_arg" == "-h" || "$_arg" == "--help" ]]; then
-        show_help
-        exit 0
-    fi
+# ---------------------------------------------------------------------------
+# Parsing des options (avant détection du PM)
+# ---------------------------------------------------------------------------
+REQ_FILE=""
+_POSARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help) show_help; exit 0 ;;
+        -r|--requirements)
+            [[ -z "${2:-}" ]] && { echo "gen-deps: -r requiert un fichier" >&2; exit 1; }
+            REQ_FILE="$2"; shift 2 ;;
+        *) _POSARGS+=("$1"); shift ;;
+    esac
 done
+set -- "${_POSARGS[@]+"${_POSARGS[@]}"}"
 
 # ---------------------------------------------------------------------------
 # Détection du gestionnaire de paquets
@@ -106,6 +120,50 @@ get_version() {
 }
 
 # ---------------------------------------------------------------------------
+# Résolution Python-aware : système d'abord, puis préfixe python
+# ---------------------------------------------------------------------------
+
+# Retourne le préfixe python pour le gestionnaire courant
+python_prefix() {
+    case "$PM" in
+        pacman)             echo "python-"  ;;
+        apt|dnf|yum|zypper) echo "python3-" ;;
+        apk)                echo "py3-"     ;;
+        *)                  echo "python-"  ;;
+    esac
+}
+
+# Extrait les noms de paquets d'un requirements.txt (sans contraintes de version)
+parse_requirements() {
+    local file="$1"
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*# ]]  && continue   # commentaires
+        [[ -z "${line//[[:space:]]/}" ]] && continue   # lignes vides
+        [[ "$line" =~ ^[[:space:]]*-  ]] && continue   # options pip (-r, --index-url…)
+        # Supprimer contraintes de version, extras [extra], options inline et espaces
+        local pkg
+        pkg=$(echo "$line" | sed 's/[><=!;\[#].*//' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+        [[ -n "$pkg" ]] && echo "$pkg"
+    done < "$file"
+}
+
+# Résoudre un nom de paquet : système en priorité, sinon préfixe python
+resolve_pkg() {
+    local name="$1"
+    # 1) Essai direct (paquet système)
+    if [[ -n "$(get_version "$name")" ]]; then
+        echo "$name"; return
+    fi
+    # 2) Essai avec préfixe python
+    local pyname; pyname="$(python_prefix)${name}"
+    if [[ -n "$(get_version "$pyname")" ]]; then
+        echo "$pyname"; return
+    fi
+    # 3) Non trouvé — retourne le nom original (apparaître en commentaire)
+    echo "$name"
+}
+
+# ---------------------------------------------------------------------------
 # Paquets par défaut si aucun n'est fourni
 # ---------------------------------------------------------------------------
 DEFAULT_PACKAGES=(
@@ -114,7 +172,7 @@ DEFAULT_PACKAGES=(
 )
 
 # ---------------------------------------------------------------------------
-# Parsing des arguments
+# Parsing des arguments positionnels
 # ---------------------------------------------------------------------------
 PROJECT=""
 PACKAGES=()
@@ -124,10 +182,25 @@ if [[ $# -ge 1 && ! "$1" =~ ^- ]]; then
     shift
 fi
 
-if [[ $# -ge 1 ]]; then
-    PACKAGES=("$@")
-else
+[[ $# -ge 1 ]] && PACKAGES=("$@")
+
+# Paquets issus du requirements.txt (résolution automatique)
+REQ_PACKAGES=()
+if [[ -n "$REQ_FILE" ]]; then
+    [[ ! -f "$REQ_FILE" ]] && { echo "gen-deps: fichier introuvable : '$REQ_FILE'" >&2; exit 1; }
+    while IFS= read -r pkg; do
+        REQ_PACKAGES+=("$(resolve_pkg "$pkg")")
+    done < <(parse_requirements "$REQ_FILE")
+fi
+
+# Construire la liste finale
+if [[ ${#PACKAGES[@]} -eq 0 && ${#REQ_PACKAGES[@]} -eq 0 ]]; then
     PACKAGES=("${DEFAULT_PACKAGES[@]}")
+else
+    PACKAGES=(
+        "${PACKAGES[@]+"${PACKAGES[@]}"}"
+        "${REQ_PACKAGES[@]+"${REQ_PACKAGES[@]}"}"
+    )
 fi
 
 # ---------------------------------------------------------------------------
