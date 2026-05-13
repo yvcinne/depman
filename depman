@@ -50,7 +50,7 @@ log() {
     # Créer le répertoire log si nécessaire (best effort)
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     # Append raw entry to file (no color)
-    echo "$entry" >> "$LOG_FILE" 2>/dev/null || true
+    { echo "$entry" >> "$LOG_FILE"; } 2>/dev/null || true
     # Print colored entry to terminal
     case "$type" in
         INFOS) echo "${C_DIM}${ts}${C_RESET} ${C_CYAN}[INFO]${C_RESET}  $msg" ;;
@@ -114,6 +114,9 @@ OPTIONS
                           Génère deps.conf pour <projet> en déléguant à gen-deps.
                           Si aucun paquet n'est fourni, utilise la liste par défaut de gen-deps.
                           Exemple: depman -g mon-projet git curl gcc
+  -R <requirements.txt>   À combiner avec -g : lit les paquets depuis un requirements.txt.
+                          Résolution auto : paquet système en priorité, sinon préfixe python.
+                          Exemple: depman -gR requirements.txt mon-projet
   -n, --dry-run           Mode simulation — affiche ce qui serait installé sans rien modifier
   -v, --version           Affiche la version de depman
   -h                      Affiche cette aide
@@ -136,6 +139,7 @@ EXEMPLES
   sudo depman -r projet-medium 20260504120000   # snapshot spécifique
   depman --diff python-test 20260511171214 20260511164240  # comparer deux snapshots
   depman -g mon-projet git curl gcc             # générer deps.conf
+  depman -gR requirements.txt mon-projet        # générer depuis requirements.txt
 
 FORMAT deps.conf
   # commentaire
@@ -614,7 +618,7 @@ run_restore() {
 # Mode GÉNÉRATION (-g | --gen)  — délègue à gen-deps
 # ---------------------------------------------------------------------------
 run_gen() {
-    local project="$1"
+    local project="${1%/}"   # supprimer le slash final éventuel
     shift  # le reste ($@) = liste optionnelle de paquets
     local gen_bin
     gen_bin="$(dirname "$(realpath "$0")")/gen-deps"
@@ -636,11 +640,11 @@ main() {
     [[ $# -eq 0 ]] && { log_error "[Erreur 101] Aucune option fournie. Utilisez 'depman -h' pour afficher l'aide."; exit 101; }
 
     local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0 opt_n=0 opt_d=0 opt_g=0
-    local project="" alt_log="" snap_ts="" snap_ts2=""
+    local project="" alt_log="" snap_ts="" snap_ts2="" req_file=""
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o sftl:rndhgv --long help,dry-run,diff,gen,version -n "depman" -- "$@") \
+    OPTS=$(getopt -o sftl:rndhgR:v --long help,dry-run,diff,gen,version -n "depman" -- "$@") \
         || handle_error 100 "Option inexistante"
     eval set -- "$OPTS"
 
@@ -652,6 +656,10 @@ main() {
             -r) opt_r=1; shift ;;
             -d|--diff) opt_d=1; shift ;;
             -g|--gen) opt_g=1; shift ;;
+            -R) req_file="$2"
+                [[ ! -f "$req_file" ]] \
+                    && handle_error 101 "-R : fichier introuvable : '$req_file'"
+                shift 2 ;;
             -l) opt_l=1; alt_log="$2"
                 LOG_DIR="${alt_log%/}"
                 LOG_FILE="$LOG_DIR/history.log"
@@ -696,7 +704,13 @@ main() {
     # Pour -g : passer les paquets restants (${@:4} si diff, ${@:2} sinon)
     if   (( opt_r )); then run_restore    "$project" "$snap_ts"
     elif (( opt_d )); then diff_snapshots "$project" "$snap_ts" "$snap_ts2"
-    elif (( opt_g )); then run_gen        "$project" "${@:2}"
+    elif (( opt_g )); then
+        # Passer -r <req_file> à gen-deps si -R a été fourni
+        if [[ -n "$req_file" ]]; then
+            run_gen "$project" -r "$req_file" "${@:2}"
+        else
+            run_gen "$project" "${@:2}"
+        fi
     elif (( opt_s )); then run_subshell   "$project"
     elif (( opt_f )); then run_fork       "$project"
     elif (( opt_t )); then run_thread     "$project"
