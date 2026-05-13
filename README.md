@@ -18,9 +18,10 @@ threads C) et maintient un journal horodaté de toutes les actions.
 5. [Codes d'erreur](#codes-derreur)
 6. [Journalisation](#journalisation)
 7. [Snapshots](#snapshots)
-8. [Scénarios de test](#scénarios-de-test)
-9. [Architecture](#architecture)
-10. [gen-deps — Générer deps.conf automatiquement](#gen-deps--générer-depsconf-automatiquement)
+8. [Comparaison de snapshots](#comparaison-de-snapshots)
+9. [Scénarios de test](#scénarios-de-test)
+10. [Architecture](#architecture)
+11. [gen-deps — Générer deps.conf automatiquement](#gen-deps--générer-depsconf-automatiquement)
 
 ---
 
@@ -104,6 +105,9 @@ depman -l ./my.log -s projet-light
 
 # Restauration de l'environnement (root requis)
 sudo depman -r projet-medium
+
+# Comparer deux snapshots
+depman --diff python-test 20260511171214 20260511164240
 ```
 
 
@@ -116,6 +120,7 @@ sudo depman -r projet-medium
 | `-f <projet>` | **Mode fork** — un processus fils par paquet, vérification parallèle |
 | `-t <projet>` | **Mode thread** — exécute `depman_thread` (C + POSIX pthreads) — voir [Installation](#installation) |
 | `-r <projet> [horodatage]` | **Restauration** — restaure depuis le dernier snapshot ou un snapshot précis (**root requis**) |
+| `-d` / `--diff <projet> <ts1> <ts2>` | **Comparaison** — affiche les paquets ajoutés/supprimés entre deux snapshots |
 | `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
 | `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
 | `-h` / `--help` | Affiche l'aide complète |
@@ -131,7 +136,7 @@ sudo depman -r projet-medium
 | 102 | Fichier `deps.conf` introuvable | Fichier absent dans le répertoire projet |
 | 103 | Paquet introuvable dans les dépôts | Le gestionnaire de paquets détecté ne trouve pas le paquet |
 | 104 | Privilèges root requis | Option `-r` sans `sudo`/root |
-| 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` |
+| 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` ou `--diff` |
 | 106 | `depman_thread.c` introuvable **ou** compilation échouée | Binaire absent de `/usr/local/bin/` ou `gcc` retourne un code non-zéro — voir [Installation](#installation) |
 
 Chaque erreur affiche l'aide complète (`-h`) puis quitte avec le code correspondant.
@@ -176,6 +181,63 @@ Un snapshot capture l'état complet des paquets installés.
 | `pacman` | `pacman -Qqe` | `pacman -S` |
 | `dnf/yum/zypper` | `rpm -qa` | Informatif uniquement |
 | `apk` | `apk info` | Informatif uniquement |
+
+> **Convention de nommage :** le nom du projet est normalisé (slash final supprimé,
+> `/` internes remplacés par `_`) pour éviter les doublons de séparateurs.
+
+---
+
+## Comparaison de snapshots
+
+`--diff` compare deux snapshots d'un même projet et affiche les paquets
+ajoutés ou supprimés entre les deux états. Aucun privilège root n'est requis.
+
+### Syntaxe
+
+```bash
+depman --diff <projet> <ts1> <ts2>
+# ou forme courte :
+depman -d <projet> <ts1> <ts2>
+```
+
+- `<projet>` — nom du projet (même valeur que pour `-s`/`-f`/`-t`)
+- `<ts1>` — horodatage du snapshot **A** (référence) au format `YYYYMMDDHHMMSS`
+- `<ts2>` — horodatage du snapshot **B** (cible) au format `YYYYMMDDHHMMSS`
+
+Listez les snapshots disponibles avec :
+
+```bash
+ls /var/log/depman/snapshots/
+```
+
+### Exemple
+
+```bash
+depman --diff python-test 20260511171214 20260511164240
+```
+
+**Sortie typique :**
+
+```
+═══ Diff snapshot : python-test ═══
+  [A] 20260511171214  →  python-test_20260511171214.snap
+  [B] 20260511164240  →  python-test_20260511164240.snap
+
++ Paquets présents dans [B] mais absents de [A] :
+  + htop
+  + nvtop
+
+− Paquets présents dans [A] mais absents de [B] :
+  − cowsay
+
+Résumé : +2 ajouté(s), −1 supprimé(s)
+```
+
+Si les deux snapshots sont identiques :
+
+```
+✔ Les deux snapshots sont identiques.
+```
 
 ---
 
@@ -271,6 +333,7 @@ depman/
 | `install_dep()` | Installe un paquet via le bon gestionnaire (distro-agnostique) |
 | `snapshot()` | Capture l'état courant des paquets |
 | `restore_snapshot()` | Restaure depuis un snapshot |
+| `diff_snapshots()` | Compare deux snapshots, affiche ajouts/suppressions |
 | `log()` / `log_info()` / `log_error()` | Journalisation horodatée |
 | `handle_error()` | Gestion centralisée des erreurs |
 | `show_help()` | Affichage de la documentation |
