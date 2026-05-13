@@ -106,7 +106,11 @@ OPTIONS
                           Si [horodatage] est fourni, restaure ce snapshot précis.
                           Format horodatage : YYYYMMDDHHMMSS (ex: 20260504120000)
                           Utilisez 'ls /var/log/depman/snapshots/' pour lister les snapshots.
-  -n                      Mode simulation (dry-run) — affiche ce qui serait installé sans rien modifier
+  -d, --diff <projet> <ts1> <ts2>
+                          Compare deux snapshots et affiche les paquets ajoutés/supprimés.
+                          Format horodatage : YYYYMMDDHHMMSS
+                          Exemple: depman --diff python-test 20260511171214 20260511164240
+  -n, --dry-run           Mode simulation — affiche ce qui serait installé sans rien modifier
   -v, --version           Affiche la version de depman
   -h                      Affiche cette aide
 
@@ -125,6 +129,7 @@ EXEMPLES
   depman -t projet-heavy
   sudo depman -r projet-medium                  # dernier snapshot
   sudo depman -r projet-medium 20260504120000   # snapshot spécifique
+  depman --diff python-test 20260511171214 20260511164240  # comparer deux snapshots
 
 FORMAT deps.conf
   # commentaire
@@ -354,7 +359,8 @@ parse_conf() {
 snapshot() {
     local project="$1"
     mkdir -p "$SNAPSHOT_DIR"
-    local snap_file="$SNAPSHOT_DIR/${project//\//_}_$(date +%Y%m%d%H%M%S).snap"
+    local proj_slug="${project%/}"; proj_slug="${proj_slug//\//_}"
+    local snap_file="$SNAPSHOT_DIR/${proj_slug}_$(date +%Y%m%d%H%M%S).snap"
 
     case "$PM" in
         apt)    dpkg --get-selections > "$snap_file" ;;
@@ -374,19 +380,20 @@ snapshot() {
 restore_snapshot() {
     local project="$1"
     local snap_ts="${2:-}"   # horodatage optionnel (ex: 20260504120000)
-    local pattern="$SNAPSHOT_DIR/${project//\//_}_*.snap"
+    local proj_slug="${project%/}"; proj_slug="${proj_slug//\//_}"
+    local pattern="$SNAPSHOT_DIR/${proj_slug}_*.snap"
     local snap_file
 
     if [[ -n "$snap_ts" ]]; then
         # Snapshot spécifique demandé
-        snap_file="$SNAPSHOT_DIR/${project//\//_}_${snap_ts}.snap"
+        snap_file="$SNAPSHOT_DIR/${proj_slug}_${snap_ts}.snap"
         if [[ ! -f "$snap_file" ]]; then
             log_error "Snapshot '$snap_ts' introuvable pour '$project'."
             log_error "Snapshots disponibles :"
             # shellcheck disable=SC2086
             ls -1t $pattern 2>/dev/null \
                 | sed "s|$SNAPSHOT_DIR/||" \
-                | sed "s|${project//\//_}_||;s|\.snap||" \
+                | sed "s|${proj_slug}_||;s|\.snap||" \
                 || log_error "  (aucun snapshot trouvé)"
             handle_error 105 "Snapshot introuvable : $snap_ts"
         fi
@@ -415,6 +422,63 @@ restore_snapshot() {
             ;;
     esac
     log_info "Restauration terminée."
+}
+
+# ---------------------------------------------------------------------------
+# Comparaison de deux snapshots (-d | --diff)
+# ---------------------------------------------------------------------------
+diff_snapshots() {
+    local project="$1"
+    local ts1="$2"
+    local ts2="$3"
+    local proj_slug="${project%/}"; proj_slug="${proj_slug//\//_}"
+    local snap1="$SNAPSHOT_DIR/${proj_slug}_${ts1}.snap"
+    local snap2="$SNAPSHOT_DIR/${proj_slug}_${ts2}.snap"
+
+    [[ ! -f "$snap1" ]] && handle_error 105 "Snapshot '$ts1' introuvable pour '$project'"
+    [[ ! -f "$snap2" ]] && handle_error 105 "Snapshot '$ts2' introuvable pour '$project'"
+
+    # Extraire uniquement le nom du paquet (1er champ) — compatible apt & pacman
+    local tmp1 tmp2
+    tmp1=$(awk '{print $1}' "$snap1" | sort)
+    tmp2=$(awk '{print $1}' "$snap2" | sort)
+
+    local added removed
+    added=$(comm   -13 <(echo "$tmp1") <(echo "$tmp2") | grep -v '^[[:space:]]*$' || true)
+    removed=$(comm -23 <(echo "$tmp1") <(echo "$tmp2") | grep -v '^[[:space:]]*$' || true)
+
+    local n_added=0 n_removed=0
+    [[ -n "$added" ]]   && n_added=$(echo "$added"   | wc -l)
+    [[ -n "$removed" ]] && n_removed=$(echo "$removed" | wc -l)
+
+    echo ""
+    echo "${C_BOLD}${C_BLUE}═══ Diff snapshot : $project ═══${C_RESET}"
+    echo "${C_DIM}  [A] $ts1  →  $(basename "$snap1")${C_RESET}"
+    echo "${C_DIM}  [B] $ts2  →  $(basename "$snap2")${C_RESET}"
+    echo ""
+
+    if [[ -n "$added" ]]; then
+        echo "${C_BOLD}${C_GREEN}+ Paquets présents dans [B] mais absents de [A] :${C_RESET}"
+        while IFS= read -r pkg; do
+            echo "  ${C_GREEN}+${C_RESET} $pkg"
+        done <<< "$added"
+        echo ""
+    fi
+
+    if [[ -n "$removed" ]]; then
+        echo "${C_BOLD}${C_RED}− Paquets présents dans [A] mais absents de [B] :${C_RESET}"
+        while IFS= read -r pkg; do
+            echo "  ${C_RED}−${C_RESET} $pkg"
+        done <<< "$removed"
+        echo ""
+    fi
+
+    if [[ -z "$added" && -z "$removed" ]]; then
+        echo "${C_GREEN}${C_BOLD}✔ Les deux snapshots sont identiques.${C_RESET}"
+    else
+        echo "${C_DIM}Résumé : ${C_GREEN}+${n_added} ajouté(s)${C_RESET}${C_DIM}, ${C_RED}−${n_removed} supprimé(s)${C_RESET}"
+    fi
+    echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -546,12 +610,12 @@ run_restore() {
 main() {
     [[ $# -eq 0 ]] && { log_error "[Erreur 101] Aucune option fournie. Utilisez 'depman -h' pour afficher l'aide."; exit 101; }
 
-    local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0 opt_n=0
-    local project="" alt_log="" snap_ts=""
+    local opt_s=0 opt_f=0 opt_t=0 opt_r=0 opt_l=0 opt_n=0 opt_d=0
+    local project="" alt_log="" snap_ts="" snap_ts2=""
 
     # Parsing des options avec getopt
     local OPTS
-    OPTS=$(getopt -o sftl:rnhv --long help,dry-run,version -n "depman" -- "$@") \
+    OPTS=$(getopt -o sftl:rndhv --long help,dry-run,diff,version -n "depman" -- "$@") \
         || handle_error 100 "Option inexistante"
     eval set -- "$OPTS"
 
@@ -561,6 +625,7 @@ main() {
             -f) opt_f=1; shift ;;
             -t) opt_t=1; shift ;;
             -r) opt_r=1; shift ;;
+            -d|--diff) opt_d=1; shift ;;
             -l) opt_l=1; alt_log="$2"
                 LOG_DIR="${alt_log%/}"
                 LOG_FILE="$LOG_DIR/history.log"
@@ -574,16 +639,21 @@ main() {
         esac
     done
 
-    if (( opt_s + opt_f + opt_t + opt_r > 1 )); then
+    if (( opt_s + opt_f + opt_t + opt_r + opt_d > 1 )); then
         handle_error 100 "Option inexistante"
     fi
 
     project="${1:-}"
     snap_ts="${2:-}"
+    snap_ts2="${3:-}"
 
     # Vérifier qu'un projet est fourni si une action est demandée
-    if (( opt_s || opt_f || opt_t || opt_r )); then
+    if (( opt_s || opt_f || opt_t || opt_r || opt_d )); then
         [[ -z "$project" ]] && handle_error 101 "Paramètre <projet> manquant"
+        if (( opt_d )); then
+            [[ -z "$snap_ts" || -z "$snap_ts2" ]] \
+                && handle_error 101 "--diff requiert deux horodatages : depman --diff <projet> <ts1> <ts2>"
+        fi
     else
         handle_error 101 "Aucune option d'action fournie"
     fi
@@ -597,10 +667,11 @@ main() {
     [[ "$PM" == "unknown" ]] && handle_error 100 "Aucun gestionnaire de paquets supporté trouvé (apt/pacman/dnf/yum/zypper/apk)"
 
     # Dispatcher
-    if   (( opt_r )); then run_restore "$project" "$snap_ts"
-    elif (( opt_s )); then run_subshell "$project"
-    elif (( opt_f )); then run_fork    "$project"
-    elif (( opt_t )); then run_thread  "$project"
+    if   (( opt_r )); then run_restore    "$project" "$snap_ts"
+    elif (( opt_d )); then diff_snapshots "$project" "$snap_ts" "$snap_ts2"
+    elif (( opt_s )); then run_subshell   "$project"
+    elif (( opt_f )); then run_fork       "$project"
+    elif (( opt_t )); then run_thread     "$project"
     fi
 }
 
