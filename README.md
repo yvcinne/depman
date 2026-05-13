@@ -108,6 +108,12 @@ sudo depman -r projet-medium
 
 # Comparer deux snapshots
 depman --diff python-test 20260511171214 20260511164240
+
+# Générer deps.conf (délègue à gen-deps)
+depman -g mon-projet git curl gcc
+
+# Générer deps.conf depuis un requirements.txt
+depman -gR requirements.txt mon-projet
 ```
 
 
@@ -121,6 +127,8 @@ depman --diff python-test 20260511171214 20260511164240
 | `-t <projet>` | **Mode thread** — exécute `depman_thread` (C + POSIX pthreads) — voir [Installation](#installation) |
 | `-r <projet> [horodatage]` | **Restauration** — restaure depuis le dernier snapshot ou un snapshot précis (**root requis**) |
 | `-d` / `--diff <projet> <ts1> <ts2>` | **Comparaison** — affiche les paquets ajoutés/supprimés entre deux snapshots |
+| `-g` / `--gen <projet> [paquets...]` | **Génération** — crée `deps.conf` en déléguant à `gen-deps` |
+| `-R <requirements.txt>` | À combiner avec `-g` : importe les paquets depuis un `requirements.txt` avec résolution auto (système → python) |
 | `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
 | `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
 | `-h` / `--help` | Affiche l'aide complète |
@@ -138,6 +146,7 @@ depman --diff python-test 20260511171214 20260511164240
 | 104 | Privilèges root requis | Option `-r` sans `sudo`/root |
 | 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` ou `--diff` |
 | 106 | `depman_thread.c` introuvable **ou** compilation échouée | Binaire absent de `/usr/local/bin/` ou `gcc` retourne un code non-zéro — voir [Installation](#installation) |
+| 107 | `gen-deps` introuvable | Option `-g` sans `gen-deps` présent à côté de `depman` ni dans le PATH |
 
 Chaque erreur affiche l'aide complète (`-h`) puis quitte avec le code correspondant.
 
@@ -342,6 +351,7 @@ depman/
 | `run_fork()` | Mode `-f` |
 | `run_thread()` | Mode `-t` |
 | `run_restore()` | Mode `-r` |
+| `run_gen()` | Mode `-g` — délègue à `gen-deps` |
 
 ---
 
@@ -379,12 +389,15 @@ sudo chmod +x /usr/local/bin/gen-deps
 
 ```
 gen-deps [<projet>] [paquet1 paquet2 ...]
+gen-deps [<projet>] -r <requirements.txt> [paquet1 paquet2 ...]
 ```
 
-| Argument | Obligatoire | Description |
-|----------|-------------|-------------|
-| `<projet>` | Non | Répertoire cible où `deps.conf` sera créé. Si omis, le fichier est généré dans le dossier courant (`./deps.conf`). |
-| `paquet1 paquet2 ...` | Non | Paquets à inclure. Si omis, la liste par défaut est utilisée. |
+| Argument / Option | Obligatoire | Description |
+|-------------------|-------------|-------------|
+| `<projet>` | Non | Répertoire cible où `deps.conf` sera créé. Si omis, génère `./deps.conf`. |
+| `paquet1 paquet2 ...` | Non | Paquets système à inclure. Si omis et sans `-r`, la liste par défaut est utilisée. |
+| `-r <fichier>` | Non | Importe les paquets depuis un `requirements.txt`. Combiné avec des paquets explicites si fournis. |
+| `-h` / `--help` | Non | Affiche l'aide. |
 
 ---
 
@@ -446,7 +459,31 @@ Génère `./deps.conf` dans le dossier courant sans créer de sous-dossier.
 
 ---
 
-#### 5. Paquet non installé sur le système
+#### 5. Depuis un fichier requirements.txt
+
+```bash
+gen-deps mon-projet -r requirements.txt
+```
+
+Lit les paquets depuis `requirements.txt`, les résout automatiquement :
+1. Essai en tant que paquet système (ex. `git` → `git`)
+2. Si non trouvé, essai avec préfixe python (ex. `requests` → `python-requests` / `python3-requests`)
+3. Si toujours absent, marqué en commentaire pour complétion manuelle
+
+```bash
+# Combiner requirements.txt et paquets système explicites
+gen-deps mon-projet -r requirements.txt git curl
+
+# Depuis depman directement
+depman -gR requirements.txt mon-projet
+depman -gR requirements.txt mon-projet git curl
+```
+
+**Quand l'utiliser :** Projet Python avec un `requirements.txt` existant ; évite de dupliquer manuellement les dépendances.
+
+---
+
+#### 6. Paquet non installé sur le système
 
 Si un paquet demandé **n'est pas installé**, il apparaît en commentaire :
 
@@ -533,6 +570,8 @@ bash                 >= 5.3.9
 ```bash
 # 1 — Générer le deps.conf depuis votre machine de référence
 ./gen-deps mon-projet git curl python gcc make
+# ou depuis un requirements.txt :
+./gen-deps mon-projet -r requirements.txt
 
 # 2 — Ouvrir et vérifier le fichier généré
 cat mon-projet/deps.conf
@@ -545,6 +584,9 @@ sudo depman -s mon-projet
 
 # 5 — Vérifier le snapshot créé automatiquement
 ls /var/log/depman/snapshots/
+
+# 6 — Comparer deux snapshots après un changement
+depman -d mon-projet 20260513192916 20260513192922
 ```
 
 ---
