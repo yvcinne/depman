@@ -138,13 +138,15 @@ EOF
 
 # ---------------------------------------------------------------------------
 # Comparaison de versions (Bash pur)
-# Retourne 0 si $1 >= $2, 1 sinon
+# version_cmp <installed> <operator> <required>
+# Retourne 0 si la contrainte est satisfaite, 1 sinon
+# Opérateurs supportés : >= > == = <=
 # ---------------------------------------------------------------------------
-version_ge() {
+_ver_compare() {
     local installed="$1"
     local required="$2"
+    # Retourne : -1 si installed < required, 0 si égal, 1 si installed > required
 
-    # Normalise en tableaux de nombres
     IFS='.' read -ra inst_parts <<< "$installed"
     IFS='.' read -ra req_parts  <<< "$required"
 
@@ -154,22 +156,40 @@ version_ge() {
     for (( i=0; i<max_len; i++ )); do
         local a="${inst_parts[$i]:-0}"
         local b="${req_parts[$i]:-0}"
-        # Garde uniquement la partie numérique (ex: "2.43.0-ubuntu")
-        a="${a//[^0-9]/}"
-        b="${b//[^0-9]/}"
-        a="${a:-0}"; b="${b:-0}"
-        if (( 10#$a > 10#$b )); then return 0; fi
-        if (( 10#$a < 10#$b )); then return 1; fi
+        a="${a//[^0-9]/}"; a="${a:-0}"
+        b="${b//[^0-9]/}"; b="${b:-0}"
+        if (( 10#$a > 10#$b )); then echo  1; return; fi
+        if (( 10#$a < 10#$b )); then echo -1; return; fi
     done
-    return 0   # égaux → OK
+    echo 0   # égaux
 }
+
+version_satisfies() {
+    local installed="$1"
+    local op="$2"
+    local required="$3"
+    local cmp
+    cmp=$(_ver_compare "$installed" "$required")
+    case "$op" in
+        ">=" ) [[ "$cmp" -ge 0 ]] ;;
+        ">"  ) [[ "$cmp" -gt 0 ]] ;;
+        "=="|"=") [[ "$cmp" -eq 0 ]] ;;
+        "<=") [[ "$cmp" -le 0 ]] ;;
+        "<" ) [[ "$cmp" -lt 0 ]] ;;
+        *   ) return 0 ;; # opérateur inconnu → toujours OK
+    esac
+}
+
+# Compat alias (used elsewhere)
+version_ge() { version_satisfies "$1" ">=" "$2"; }
 
 # ---------------------------------------------------------------------------
 # Vérification et installation d'un paquet (distro-agnostique)
 # ---------------------------------------------------------------------------
 check_dep() {
     local pkg="$1"
-    local req_ver="$2"
+    local req_op="$2"
+    local req_ver="$3"
     local inst_ver=""
     local installed=false
 
@@ -213,10 +233,10 @@ check_dep() {
     esac
 
     if $installed; then
-        if version_ge "$inst_ver" "$req_ver"; then
-            log_info "${C_GREEN}✔${C_RESET} $pkg >= $req_ver ${C_DIM}(v${inst_ver})${C_RESET}"
+        if version_satisfies "$inst_ver" "$req_op" "$req_ver"; then
+            log_info "${C_GREEN}✔${C_RESET} $pkg $req_op $req_ver ${C_DIM}(v${inst_ver})${C_RESET}"
         else
-            log_info "${C_YELLOW}⚠${C_RESET} $pkg v${inst_ver} < $req_ver requis — mise à jour..."
+            log_info "${C_YELLOW}⚠${C_RESET} $pkg v${inst_ver} ne satisfait pas $req_op $req_ver — mise à jour..."
             install_dep "$pkg"
         fi
     else
@@ -318,11 +338,12 @@ parse_conf() {
         [[ "$line" =~ ^[[:space:]]*\[ ]] && continue
         [[ -z "${line// }" ]] && continue
 
-        # Parser : paquet >= version
-        if [[ "$line" =~ ^([a-zA-Z0-9_+.-]+)[[:space:]]*\>=[[:space:]]*([0-9][0-9.]*)$ ]]; then
+        # Parser : paquet [>=|>|==|=|<=] version
+        if [[ "$line" =~ ^([a-zA-Z0-9_+.-]+)[[:space:]]*(>=|>|==|=|<=|<)[[:space:]]*([0-9][0-9.]*)$ ]]; then
             local pkg="${BASH_REMATCH[1]}"
-            local ver="${BASH_REMATCH[2]}"
-            echo "$pkg $ver"
+            local op="${BASH_REMATCH[2]}"
+            local ver="${BASH_REMATCH[3]}"
+            echo "$pkg $op $ver"
         fi
     done < "$conf_file"
 }
@@ -416,12 +437,12 @@ compile_thread_prog() {
 run_subshell() {
     local project="$1"
     log_info "${C_BOLD}${C_BLUE}═══ Mode subshell — '$project' ═══${C_RESET}"
+    local code=0
     (
-        while IFS=' ' read -r pkg ver; do
-            check_dep "$pkg" "$ver"
+        while IFS=' ' read -r pkg op ver; do
+            check_dep "$pkg" "$op" "$ver"
         done < <(parse_conf "$project")
-    )
-    local code=$?
+    ) || code=$?
     if (( DRY_RUN )); then
         log_info "${C_MAGENTA}${C_BOLD}[DRY-RUN]${C_RESET} ${C_MAGENTA}Snapshot ignoré (simulation)${C_RESET}"
     else
@@ -438,9 +459,9 @@ run_fork() {
     log_info "${C_BOLD}${C_BLUE}═══ Mode fork — '$project' ═══${C_RESET}"
 
     local pids=()
-    while IFS=' ' read -r pkg ver; do
+    while IFS=' ' read -r pkg op ver; do
         (
-            check_dep "$pkg" "$ver"
+            check_dep "$pkg" "$op" "$ver"
         ) &
         pids+=($!)
         log_info "${C_CYAN}⇢${C_RESET} Processus fils lancé pour ${C_BOLD}$pkg${C_RESET} (PID $!)"
@@ -471,9 +492,11 @@ run_thread() {
 
     # Collecter la liste des paquets
     local pkgs=()
+    local ops=()
     local vers=()
-    while IFS=' ' read -r pkg ver; do
+    while IFS=' ' read -r pkg op ver; do
         pkgs+=("$pkg")
+        ops+=("$op")
         vers+=("$ver")
     done < <(parse_conf "$project")
 
@@ -484,9 +507,16 @@ run_thread() {
     results=$("$THREAD_BIN" "$PM" "${pkgs[@]}")
 
     # Traiter les résultats (format: nom_paquet:1 ou nom_paquet:0)
+    # Le programme C ne vérifie que la présence ; on délègue la vérification
+    # de version à check_dep pour les paquets présents ET absents.
+    local idx=0
     while IFS=: read -r pkg status; do
+        local op="${ops[$idx]:->=}"
+        local ver="${vers[$idx]:-0}"
+        (( idx++ )) || true
         if [[ "$status" -eq 1 ]]; then
-            log_info "${C_GREEN}✔${C_RESET} $pkg : présent"
+            # Paquet présent : vérifier la contrainte de version
+            check_dep "$pkg" "$op" "$ver"
         else
             log_info "${C_YELLOW}↓${C_RESET} $pkg : absent — installation en cours..."
             install_dep "$pkg"
@@ -548,8 +578,8 @@ main() {
         handle_error 100 "Option inexistante"
     fi
 
-    local project="${1:-}"
-    local snap_ts="${2:-}"
+    project="${1:-}"
+    snap_ts="${2:-}"
 
     # Vérifier qu'un projet est fourni si une action est demandée
     if (( opt_s || opt_f || opt_t || opt_r )); then

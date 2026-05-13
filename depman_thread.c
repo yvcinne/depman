@@ -51,7 +51,7 @@ static void build_check_cmd(char *buf, size_t bufsz, const char *pkg) {
 /* ── Fonction exécutée par chaque thread ─────────────────────────────────── */
 void *check_package(void *arg) {
     Dep *d = (Dep *)arg;
-    char cmd[256];
+    char cmd[512];
 
     build_check_cmd(cmd, sizeof(cmd), d->name);
     d->result = (system(cmd) == 0) ? 1 : 0;
