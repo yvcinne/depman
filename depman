@@ -384,7 +384,6 @@ snapshot() {
     esac
 
     log_info "Snapshot sauvegardé : $snap_file"
-    echo "$snap_file"
 }
 
 restore_snapshot() {
