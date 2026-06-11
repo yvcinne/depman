@@ -1,308 +1,307 @@
-# depman — Gestionnaire de Dépendances Bash
+# depman — Bash Dependency Manager
 
-`depman` est un outil en ligne de commande écrit en **Bash 5.x** qui automatise
-la vérification et l'installation des dépendances d'un projet à partir d'un
-fichier `deps.conf`. Il propose trois modes d'exécution (subshell, fork,
-threads C) et maintient un journal horodaté de toutes les actions.
+`depman` is a command-line tool written in **Bash 5.x** that automates
+the verification and installation of project dependencies from a
+`deps.conf` file. It offers three execution modes (subshell, fork,
+C threads) and maintains a timestamped log of all actions.
 
-> **Distros supportées :** Debian/Ubuntu (`apt`) • Arch (`pacman`) • Fedora/RHEL (`dnf`) • CentOS ancien (`yum`) • openSUSE (`zypper`) • Alpine (`apk`)
+> **Supported distros:** Debian/Ubuntu (`apt`) • Arch (`pacman`) • Fedora/RHEL (`dnf`) • Old CentOS (`yum`) • openSUSE (`zypper`) • Alpine (`apk`)
 
 ---
 
-## Table des matières
+## Table of Contents
 
-1. [Prérequis](#prérequis)
+1. [Prerequisites](#prerequisites)
 2. [Installation](#installation)
-3. [Utilisation](#utilisation)
+3. [Usage](#usage)
 4. [Options](#options)
-5. [Codes d'erreur](#codes-derreur)
-6. [Journalisation](#journalisation)
+5. [Error Codes](#error-codes)
+6. [Logging](#logging)
 7. [Snapshots](#snapshots)
-8. [Comparaison de snapshots](#comparaison-de-snapshots)
-9. [Scénarios de test](#scénarios-de-test)
+8. [Snapshot Comparison](#snapshot-comparison)
+9. [Test Scenarios](#test-scenarios)
 10. [Architecture](#architecture)
-11. [gen-deps — Générer deps.conf automatiquement](#gen-deps--générer-depsconf-automatiquement)
+11. [gen-deps — Generate deps.conf automatically](#gen-deps--generate-depsconf-automatically)
 
 ---
 
-## Prérequis
+## Prerequisites
 
-| Outil | Version minimale | Usage |
-|-------|-----------------|-------|
-| Bash | 5.x | Script principal |
-| gcc | 9.0 | Compilation de `depman_thread.c` |
-| getopt | — | Parsing des options |
+| Tool | Minimum version | Usage |
+|------|-----------------|-------|
+| Bash | 5.x | Main script |
+| gcc | 9.0 | Compiling `depman_thread.c` |
+| getopt | — | Option parsing |
 
-### Gestionnaires de paquets supportés
+### Supported package managers
 
-| Gestionnaire | Distros |
-|-------------|--------|
+| Manager | Distros |
+|---------|---------|
 | `apt-get` | Debian, Ubuntu, Kali, Mint, Raspbian |
 | `pacman` | Arch Linux, Manjaro, EndeavourOS |
 | `dnf` | Fedora, RHEL 8+, Rocky, AlmaLinux |
-| `yum` | CentOS 7, RHEL 7 et antérieurs |
+| `yum` | CentOS 7, RHEL 7 and older |
 | `zypper` | openSUSE Leap / Tumbleweed |
-| `apk` | Alpine Linux, images Docker |
+| `apk` | Alpine Linux, Docker images |
 
-Le gestionnaire est **détecté automatiquement** au démarrage via `detect_pm()`.
+The manager is **auto-detected** at startup via `detect_pm()`.
 
 ---
 
 ## Installation
 
 ```bash
-# Cloner le dépôt
+# Clone the repository
 git clone https://github.com/yvcinne/depman
 cd depman/
 
-# Rendre le script exécutable
+# Make the script executable
 chmod +x depman
 
-# (Optionnel) Installer globalement
+# (Optional) Install globally
 sudo cp depman /usr/local/bin/
 
-# Compiler et installer le programme thread (requis pour l'option -t)
+# Compile and install the thread program (required for the -t option)
 sudo gcc -o /usr/local/bin/depman_thread depman_thread.c -lpthread
 
-# Créer le répertoire de log (ou utiliser -l pour un chemin alternatif)
+# Create the log directory (or use -l for an alternative path)
 sudo mkdir -p /var/log/depman
 sudo chmod 755 /var/log/depman
 ```
 
-> **Note :** Le répertoire `/var/log/depman/` est créé automatiquement au
-> premier lancement si les droits le permettent. Sinon, utilisez `-l` pour
-> spécifier un chemin accessible sans root.
+> **Note:** The `/var/log/depman/` directory is created automatically on
+> first launch if permissions allow. Otherwise, use `-l` to specify a
+> path accessible without root.
 
-> **Important :** Lorsque `depman` est installé dans `/usr/local/bin/`, il
-> cherche le binaire `depman_thread` **dans le même répertoire**. La commande
-> `gcc` ci-dessus compile `depman_thread.c` et place le binaire résultant
-> au bon endroit. Sans cette étape, l'option `-t` échoue avec l'erreur 106.
+> **Important:** When `depman` is installed in `/usr/local/bin/`, it
+> looks for the `depman_thread` binary **in the same directory**. The
+> `gcc` command above compiles `depman_thread.c` and places the resulting
+> binary in the right location. Without this step, the `-t` option fails
+> with error 106.
 
 ---
 
-## Utilisation
+## Usage
 
 ```bash
-depman [OPTIONS] <projet>
+depman [OPTIONS] <project>
 ```
 
-`<projet>` est le chemin vers un répertoire contenant un fichier `deps.conf`.
+`<project>` is the path to a directory containing a `deps.conf` file.
 
-### Exemples rapides
+### Quick examples
 
 ```bash
-# Vérification légère en mode subshell
+# Light verification in subshell mode
 depman -s projet-light
 
-# Vérification parallèle en mode fork (installe les manquants)
+# Parallel verification in fork mode (installs missing packages)
 depman -f projet-medium
 
-# Vérification ultra-rapide en mode thread (C + pthreads)
+# Ultra-fast verification in thread mode (C + pthreads)
 depman -t projet-heavy
 
-# Log alternatif (sans root)
+# Alternative log path (no root required)
 depman -l ./my.log -s projet-light
 
-# Restauration de l'environnement (root requis)
+# Restore environment (root required)
 sudo depman -r projet-medium
 
-# Comparer deux snapshots
+# Compare two snapshots
 depman --diff python-test 20260511171214 20260511164240
 
-# Générer deps.conf (délègue à gen-deps)
+# Generate deps.conf (delegates to gen-deps)
 depman -g mon-projet git curl gcc
 
-# Générer deps.conf depuis un requirements.txt
+# Generate deps.conf from a requirements.txt
 depman -gR requirements.txt mon-projet
 ```
-
-
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `-s <projet>` | **Mode subshell** — vérification séquentielle dans un sous-shell (isolation des variables) |
-| `-f <projet>` | **Mode fork** — un processus fils par paquet, vérification parallèle |
-| `-t <projet>` | **Mode thread** — exécute `depman_thread` (C + POSIX pthreads) — voir [Installation](#installation) |
-| `-r <projet> [horodatage]` | **Restauration** — restaure depuis le dernier snapshot ou un snapshot précis (**root requis**) |
-| `-d` / `--diff <projet> <ts1> <ts2>` | **Comparaison** — affiche les paquets ajoutés/supprimés entre deux snapshots |
-| `-g` / `--gen <projet> [paquets...]` | **Génération** — crée `deps.conf` en déléguant à `gen-deps` |
-| `-R <requirements.txt>` | À combiner avec `-g` : importe les paquets depuis un `requirements.txt` avec résolution auto (système → python) |
-| `-l <répertoire>` | Répertoire alternatif pour le fichier de log (`history.log` y sera créé) |
-| `-n` / `--dry-run` | **Mode simulation** — affiche ce qui serait installé sans rien modifier |
-| `-h` / `--help` | Affiche l'aide complète |
+| `-s <project>` | **Subshell mode** — sequential verification in a subshell (variable isolation) |
+| `-f <project>` | **Fork mode** — one child process per package, parallel verification |
+| `-t <project>` | **Thread mode** — runs `depman_thread` (C + POSIX pthreads) — see [Installation](#installation) |
+| `-r <project> [timestamp]` | **Restore** — restores from the latest snapshot or a specific snapshot (**root required**) |
+| `-d` / `--diff <project> <ts1> <ts2>` | **Comparison** — shows packages added/removed between two snapshots |
+| `-g` / `--gen <project> [packages...]` | **Generation** — creates `deps.conf` by delegating to `gen-deps` |
+| `-R <requirements.txt>` | Use with `-g`: imports packages from a `requirements.txt` with auto-resolution (system → python) |
+| `-l <directory>` | Alternative directory for the log file (`history.log` will be created there) |
+| `-n` / `--dry-run` | **Simulation mode** — shows what would be installed without making any changes |
+| `-h` / `--help` | Displays full help |
 
 ---
 
-## Codes d'erreur
+## Error Codes
 
-| Code | Description | Déclencheur |
-|------|-------------|-------------|
-| 100 | Option inexistante | `getopt` ne reconnaît pas l'option |
-| 101 | Paramètre `<projet>` manquant | Aucun argument positionnel fourni |
-| 102 | Fichier `deps.conf` introuvable | Fichier absent dans le répertoire projet |
-| 103 | Paquet introuvable dans les dépôts | Le gestionnaire de paquets détecté ne trouve pas le paquet |
-| 104 | Privilèges root requis | Option `-r` sans `sudo`/root |
-| 105 | Snapshot introuvable | Fichier snapshot absent pour `-r` ou `--diff` |
-| 106 | `depman_thread.c` introuvable **ou** compilation échouée | Binaire absent de `/usr/local/bin/` ou `gcc` retourne un code non-zéro — voir [Installation](#installation) |
-| 107 | `gen-deps` introuvable | Option `-g` sans `gen-deps` présent à côté de `depman` ni dans le PATH |
+| Code | Description | Trigger |
+|------|-------------|---------|
+| 100 | Unknown option | `getopt` does not recognize the option |
+| 101 | Missing `<project>` parameter | No positional argument provided |
+| 102 | `deps.conf` file not found | File absent from the project directory |
+| 103 | Package not found in repositories | The detected package manager cannot find the package |
+| 104 | Root privileges required | Option `-r` without `sudo`/root |
+| 105 | Snapshot not found | Snapshot file absent for `-r` or `--diff` |
+| 106 | `depman_thread.c` not found **or** compilation failed | Binary absent from `/usr/local/bin/` or `gcc` returns a non-zero code — see [Installation](#installation) |
+| 107 | `gen-deps` not found | Option `-g` without `gen-deps` present alongside `depman` or in PATH |
 
-Chaque erreur affiche l'aide complète (`-h`) puis quitte avec le code correspondant.
+Each error displays the full help (`-h`) then exits with the corresponding code.
 
 ---
 
-## Journalisation
+## Logging
 
-Toutes les actions sont enregistrées **simultanément** dans le terminal et dans
-le fichier log via `tee -a`.
+All actions are recorded **simultaneously** in the terminal and in the
+log file via `tee -a`.
 
-**Fichier par défaut :** `/var/log/depman/history.log`  
-**Format :**
+**Default file:** `/var/log/depman/history.log`  
+**Format:**
 
 ```
 yyyy-mm-dd-hh-mm-ss:username:INFOS:message
 yyyy-mm-dd-hh-mm-ss:username:ERROR:message
 ```
 
-**Exemples concrets :**
+**Concrete examples:**
 
 ```
-2026-04-23-14-32-01:alice:INFOS:Vérification de git >= 2.30 -> OK (v2.43)
-2026-04-23-14-32-02:alice:INFOS:nodejs absent, installation en cours...
-2026-04-23-14-32-10:alice:INFOS:nodejs installé avec succès (v18.19)
-2026-04-23-14-32-15:alice:ERROR:[Erreur 103] gcc introuvable dans les dépôts apt
+2026-04-23-14-32-01:alice:INFOS:Checking git >= 2.30 -> OK (v2.43)
+2026-04-23-14-32-02:alice:INFOS:nodejs missing, installing...
+2026-04-23-14-32-10:alice:INFOS:nodejs installed successfully (v18.19)
+2026-04-23-14-32-15:alice:ERROR:[Error 103] gcc not found in apt repositories
 ```
 
 ---
 
 ## Snapshots
 
-Un snapshot capture l'état complet des paquets installés.
+A snapshot captures the complete state of installed packages.
 
-- **Création automatique** à la fin de chaque exécution réussie (`-s`, `-f`, `-t`).
-- **Emplacement :** `/var/log/depman/snapshots/<projet>_YYYYMMDDHHMMSS.snap`
-- **Restauration :** `sudo depman -r <projet>` (code 105 si aucun snapshot trouvé)
+- **Automatic creation** at the end of each successful run (`-s`, `-f`, `-t`).
+- **Location:** `/var/log/depman/snapshots/<project>_YYYYMMDDHHMMSS.snap`
+- **Restore:** `sudo depman -r <project>` (code 105 if no snapshot found)
 
-| Gestionnaire | Commande snapshot | Restauration |
-|-------------|------------------|--------------|
+| Manager | Snapshot command | Restore |
+|---------|-----------------|---------|
 | `apt` | `dpkg --get-selections` | `dpkg --set-selections` + `apt-get` |
 | `pacman` | `pacman -Qqe` | `pacman -S` |
-| `dnf/yum/zypper` | `rpm -qa` | Informatif uniquement |
-| `apk` | `apk info` | Informatif uniquement |
+| `dnf/yum/zypper` | `rpm -qa` | Informational only |
+| `apk` | `apk info` | Informational only |
 
-> **Convention de nommage :** le nom du projet est normalisé (slash final supprimé,
-> `/` internes remplacés par `_`) pour éviter les doublons de séparateurs.
+> **Naming convention:** the project name is normalized (trailing slash removed,
+> internal `/` replaced by `_`) to avoid duplicate separators.
 
 ---
 
-## Comparaison de snapshots
+## Snapshot Comparison
 
-`--diff` compare deux snapshots d'un même projet et affiche les paquets
-ajoutés ou supprimés entre les deux états. Aucun privilège root n'est requis.
+`--diff` compares two snapshots of the same project and displays packages
+added or removed between the two states. No root privileges required.
 
-### Syntaxe
+### Syntax
 
 ```bash
-depman --diff <projet> <ts1> <ts2>
-# ou forme courte :
-depman -d <projet> <ts1> <ts2>
+depman --diff <project> <ts1> <ts2>
+# or short form:
+depman -d <project> <ts1> <ts2>
 ```
 
-- `<projet>` — nom du projet (même valeur que pour `-s`/`-f`/`-t`)
-- `<ts1>` — horodatage du snapshot **A** (référence) au format `YYYYMMDDHHMMSS`
-- `<ts2>` — horodatage du snapshot **B** (cible) au format `YYYYMMDDHHMMSS`
+- `<project>` — project name (same value as for `-s`/`-f`/`-t`)
+- `<ts1>` — timestamp of snapshot **A** (reference) in `YYYYMMDDHHMMSS` format
+- `<ts2>` — timestamp of snapshot **B** (target) in `YYYYMMDDHHMMSS` format
 
-Listez les snapshots disponibles avec :
+List available snapshots with:
 
 ```bash
 ls /var/log/depman/snapshots/
 ```
 
-### Exemple
+### Example
 
 ```bash
 depman --diff python-test 20260511171214 20260511164240
 ```
 
-**Sortie typique :**
+**Typical output:**
 
 ```
-═══ Diff snapshot : python-test ═══
+═══ Snapshot diff: python-test ═══
   [A] 20260511171214  →  python-test_20260511171214.snap
   [B] 20260511164240  →  python-test_20260511164240.snap
 
-+ Paquets présents dans [B] mais absents de [A] :
++ Packages present in [B] but absent from [A]:
   + htop
   + nvtop
 
-− Paquets présents dans [A] mais absents de [B] :
+− Packages present in [A] but absent from [B]:
   − cowsay
 
-Résumé : +2 ajouté(s), −1 supprimé(s)
+Summary: +2 added, −1 removed
 ```
 
-Si les deux snapshots sont identiques :
+If both snapshots are identical:
 
 ```
-✔ Les deux snapshots sont identiques.
+✔ Both snapshots are identical.
 ```
 
 ---
 
-## Scénarios de test
+## Test Scenarios
 
-### Scénario 1 — Léger (subshell)
+### Scenario 1 — Light (subshell)
 
 ```bash
 mkdir -p projet-light
-cp deps.conf projet-light/deps.conf   # ou créer un deps.conf avec 2-3 paquets
+cp deps.conf projet-light/deps.conf   # or create a deps.conf with 2-3 packages
 depman -s projet-light
 ```
 
-**Résultat attendu :**
-- 3 lignes `INFOS` dans `history.log`
-- Code retour : `0`
-- Aucune installation déclenchée (paquets déjà présents)
-- Variables du shell parent inchangées
+**Expected result:**
+- 3 `INFOS` lines in `history.log`
+- Return code: `0`
+- No installation triggered (packages already present)
+- Parent shell variables unchanged
 
 ---
 
-### Scénario 2 — Moyen (fork)
+### Scenario 2 — Medium (fork)
 
 ```bash
 mkdir -p projet-medium
-cp deps.conf projet-medium/deps.conf  # 5-6 paquets, 2-3 potentiellement absents
+cp deps.conf projet-medium/deps.conf  # 5-6 packages, 2-3 potentially missing
 depman -f projet-medium
 ```
 
-**Résultat attendu :**
-- 5+ processus fils créés (PID affichés dans les logs)
-- Paquets manquants installés via `apt-get`
-- Logs mixtes `INFOS` + `ERROR` (code 103 si paquet absent des dépôts)
-- Snapshot créé dans `snapshots/`
+**Expected result:**
+- 5+ child processes created (PIDs shown in logs)
+- Missing packages installed via `apt-get`
+- Mixed `INFOS` + `ERROR` logs (code 103 if package not in repositories)
+- Snapshot created in `snapshots/`
 
 ---
 
-### Scénario 3 — Lourd (thread)
+### Scenario 3 — Heavy (thread)
 
-> **Prérequis :** `depman_thread` doit être compilé et installé (voir [Installation](#installation)).
+> **Prerequisite:** `depman_thread` must be compiled and installed (see [Installation](#installation)).
 
 ```bash
-# Si depman est installé globalement, compiler depman_thread d'abord :
+# If depman is installed globally, compile depman_thread first:
 sudo gcc -o /usr/local/bin/depman_thread depman_thread.c -lpthread
 
 mkdir -p projet-heavy
-cp deps.conf projet-heavy/deps.conf   # 10+ paquets
+cp deps.conf projet-heavy/deps.conf   # 10+ packages
 sudo depman -t projet-heavy
 ```
 
-**Résultat attendu :**
-- `depman_thread` trouvé dans `/usr/local/bin/` et exécuté directement
-- 10+ threads simultanés lancés par `depman_thread`
-- Progression `[X/N]` affichée lors du traitement des résultats
-- Snapshot complet de l'environnement
-- Mode thread plus rapide que fork sur 10+ paquets
+**Expected result:**
+- `depman_thread` found in `/usr/local/bin/` and executed directly
+- 10+ simultaneous threads launched by `depman_thread`
+- `[X/N]` progress displayed during result processing
+- Full environment snapshot
+- Thread mode faster than fork on 10+ packages
 
 ---
 
@@ -310,233 +309,229 @@ sudo depman -t projet-heavy
 
 ```
 depman/
-├── depman            # Script principal Bash (exécutable)
-├── depman_thread.c   # Programme C (option -t, vérification parallèle)
-├── deps.conf         # Exemple de configuration
-├── gen-deps          # Helper : génère deps.conf depuis les paquets installés
-├── README.md         # Ce fichier
-└── /var/log/depman/          # Créé automatiquement
-    ├── history.log            # Journal horodaté de toutes les actions
-    └── snapshots/             # Sauvegardes d'état des paquets
-        └── projet_YYYYMMDDHHMMSS.snap
+├── depman            # Main Bash script (executable)
+├── depman_thread.c   # C program (-t option, parallel verification)
+├── deps.conf         # Example configuration
+├── gen-deps          # Helper: generates deps.conf from installed packages
+├── README.md         # This file
+└── /var/log/depman/          # Created automatically
+    ├── history.log            # Timestamped log of all actions
+    └── snapshots/             # Package state backups
+        └── project_YYYYMMDDHHMMSS.snap
 ```
 
-### Composants
+### Components
 
-| Composant | Rôle | Technologie |
-|-----------|------|-------------|
-| `depman` | Script principal, point d'entrée | Bash 5.x |
-| `depman_thread.c` | Vérification parallèle | C + POSIX pthreads |
-| `deps.conf` | Déclaration déclarative des dépendances | Format `.conf` maison |
-| `gen-deps` | Génère `deps.conf` depuis les paquets installés | Bash 5.x |
-| `history.log` | Journal horodaté | Texte structuré |
-| `snapshots/` | Sauvegardes d'état | apt/pacman/rpm/apk |
+| Component | Role | Technology |
+|-----------|------|------------|
+| `depman` | Main script, entry point | Bash 5.x |
+| `depman_thread.c` | Parallel verification | C + POSIX pthreads |
+| `deps.conf` | Declarative dependency declaration | Custom `.conf` format |
+| `gen-deps` | Generates `deps.conf` from installed packages | Bash 5.x |
+| `history.log` | Timestamped log | Structured text |
+| `snapshots/` | State backups | apt/pacman/rpm/apk |
 
-### Fonctions Bash principales
+### Main Bash Functions
 
-| Fonction | Rôle |
+| Function | Role |
 |----------|------|
-| `detect_pm()` | Détecte le gestionnaire de paquets (`apt`/`pacman`/`dnf`/`yum`/`zypper`/`apk`) |
-| `parse_conf()` | Lit et parse `deps.conf` |
-| `check_dep()` | Vérifie si un paquet est installé et sa version (distro-agnostique) |
-| `install_dep()` | Installe un paquet via le bon gestionnaire (distro-agnostique) |
-| `snapshot()` | Capture l'état courant des paquets |
-| `restore_snapshot()` | Restaure depuis un snapshot |
-| `diff_snapshots()` | Compare deux snapshots, affiche ajouts/suppressions |
-| `log()` / `log_info()` / `log_error()` | Journalisation horodatée |
-| `handle_error()` | Gestion centralisée des erreurs |
-| `show_help()` | Affichage de la documentation |
-| `compile_thread_prog()` | Compilation automatique du programme C |
+| `detect_pm()` | Detects the package manager (`apt`/`pacman`/`dnf`/`yum`/`zypper`/`apk`) |
+| `parse_conf()` | Reads and parses `deps.conf` |
+| `check_dep()` | Checks if a package is installed and its version (distro-agnostic) |
+| `install_dep()` | Installs a package via the appropriate manager (distro-agnostic) |
+| `snapshot()` | Captures the current package state |
+| `restore_snapshot()` | Restores from a snapshot |
+| `diff_snapshots()` | Compares two snapshots, displays additions/removals |
+| `log()` / `log_info()` / `log_error()` | Timestamped logging |
+| `handle_error()` | Centralized error handling |
+| `show_help()` | Displays documentation |
+| `compile_thread_prog()` | Automatic compilation of the C program |
 | `run_subshell()` | Mode `-s` |
 | `run_fork()` | Mode `-f` |
 | `run_thread()` | Mode `-t` |
 | `run_restore()` | Mode `-r` |
-| `run_gen()` | Mode `-g` — délègue à `gen-deps` |
+| `run_gen()` | Mode `-g` — delegates to `gen-deps` |
 
 ---
 
-## gen-deps — Générer deps.conf automatiquement
+## gen-deps — Generate deps.conf automatically
 
-`gen-deps` est un script Bash companion de `depman`. Il **inspecte les paquets
-installés sur votre machine** et génère automatiquement un fichier `deps.conf`
-prêt à l'emploi. Aucun accès réseau n'est requis — tout est lu depuis la base
-de données locale de votre gestionnaire de paquets.
+`gen-deps` is a companion Bash script for `depman`. It **inspects the
+packages installed on your machine** and automatically generates a
+ready-to-use `deps.conf` file. No network access required — everything
+is read from your package manager's local database.
 
 ---
 
 ### Installation
 
-#### Utilisation locale (depuis le dépôt cloné)
+#### Local usage (from the cloned repository)
 
 ```bash
 cd depman/
 ./gen-deps
 ```
 
-#### Installation globale (recommandée)
+#### Global installation (recommended)
 
 ```bash
 sudo cp gen-deps /usr/local/bin/gen-deps
 sudo chmod +x /usr/local/bin/gen-deps
 ```
 
-> Une fois installé globalement, remplacez `./gen-deps` par `gen-deps` dans
-> tous les exemples ci-dessous.
+> Once installed globally, replace `./gen-deps` with `gen-deps` in
+> all the examples below.
 
 ---
 
-### Syntaxe
+### Syntax
 
 ```
-gen-deps [<projet>] [paquet1 paquet2 ...]
-gen-deps [<projet>] -r <requirements.txt> [paquet1 paquet2 ...]
+gen-deps [<project>] [package1 package2 ...]
+gen-deps [<project>] -r <requirements.txt> [package1 package2 ...]
 ```
 
-| Argument / Option | Obligatoire | Description |
-|-------------------|-------------|-------------|
-| `<projet>` | Non | Répertoire cible où `deps.conf` sera créé. Si omis, génère `./deps.conf`. |
-| `paquet1 paquet2 ...` | Non | Paquets système à inclure. Si omis et sans `-r`, la liste par défaut est utilisée. |
-| `-r <fichier>` | Non | Importe les paquets depuis un `requirements.txt`. Combiné avec des paquets explicites si fournis. |
-| `-h` / `--help` | Non | Affiche l'aide. |
+| Argument / Option | Required | Description |
+|-------------------|----------|-------------|
+| `<project>` | No | Target directory where `deps.conf` will be created. If omitted, generates `./deps.conf`. |
+| `package1 package2 ...` | No | System packages to include. If omitted and no `-r`, the default list is used. |
+| `-r <file>` | No | Imports packages from a `requirements.txt`. Combined with explicit packages if provided. |
+| `-h` / `--help` | No | Displays help. |
 
 ---
 
-### Cas d'utilisation
+### Use Cases
 
-#### 1. Sans argument — dossier courant, paquets par défaut
+#### 1. No argument — current directory, default packages
 
 ```bash
 ./gen-deps
 ```
 
-Génère `./deps.conf` avec tous les paquets de la liste par défaut qui sont
-installés sur votre système.
+Generates `./deps.conf` with all packages from the default list that are
+installed on your system.
 
-**Quand l'utiliser :** Démarrage rapide, environnement de développement
-générique.
+**When to use:** Quick start, generic development environment.
 
 ---
 
-#### 2. Nom de projet seulement
+#### 2. Project name only
 
 ```bash
 ./gen-deps mon-projet
 ```
 
-Crée le dossier `mon-projet/` s'il n'existe pas, puis génère
-`mon-projet/deps.conf` avec les paquets par défaut.
+Creates the `mon-projet/` directory if it doesn't exist, then generates
+`mon-projet/deps.conf` with the default packages.
 
-**Quand l'utiliser :** Initialiser rapidement la configuration d'un nouveau
-projet.
+**When to use:** Quickly initialize the configuration for a new project.
 
 ---
 
-#### 3. Projet + paquets explicites
+#### 3. Project + explicit packages
 
 ```bash
 ./gen-deps mon-projet git curl gcc make python
 ```
 
-Génère `mon-projet/deps.conf` avec **uniquement** les paquets listés.
-Chaque version est lue depuis la base locale du gestionnaire de paquets.
+Generates `mon-projet/deps.conf` with **only** the listed packages.
+Each version is read from the package manager's local database.
 
-**Quand l'utiliser :** Vous connaissez exactement les dépendances de votre
-projet et voulez un `deps.conf` minimal et précis.
+**When to use:** You know exactly your project's dependencies and want a
+minimal, precise `deps.conf`.
 
 ---
 
-#### 4. Dossier courant (`.`) + paquets explicites
+#### 4. Current directory (`.`) + explicit packages
 
 ```bash
 cd ~/projects/mon-app
 gen-deps . git curl python openssl
 ```
 
-Génère `./deps.conf` dans le dossier courant sans créer de sous-dossier.
+Generates `./deps.conf` in the current directory without creating a subdirectory.
 
-**Quand l'utiliser :** Vous êtes déjà dans le répertoire de votre projet.
-
+**When to use:** You are already in your project directory.
 
 ---
 
-#### 5. Depuis un fichier requirements.txt
+#### 5. From a requirements.txt file
 
 ```bash
 gen-deps mon-projet -r requirements.txt
 ```
 
-Lit les paquets depuis `requirements.txt`, les résout automatiquement :
-1. Essai en tant que paquet système (ex. `git` → `git`)
-2. Si non trouvé, essai avec préfixe python (ex. `requests` → `python-requests` / `python3-requests`)
-3. Si toujours absent, marqué en commentaire pour complétion manuelle
+Reads packages from `requirements.txt`, resolves them automatically:
+1. Tries as a system package (e.g. `git` → `git`)
+2. If not found, tries with python prefix (e.g. `requests` → `python-requests` / `python3-requests`)
+3. If still missing, marked as a comment for manual completion
 
 ```bash
-# Combiner requirements.txt et paquets système explicites
+# Combine requirements.txt and explicit system packages
 gen-deps mon-projet -r requirements.txt git curl
 
-# Depuis depman directement
+# Directly from depman
 depman -gR requirements.txt mon-projet
 depman -gR requirements.txt mon-projet git curl
 ```
 
-**Quand l'utiliser :** Projet Python avec un `requirements.txt` existant ; évite de dupliquer manuellement les dépendances.
+**When to use:** Python project with an existing `requirements.txt`; avoids manually duplicating dependencies.
 
 ---
 
-#### 6. Paquet non installé sur le système
+#### 6. Package not installed on the system
 
-Si un paquet demandé **n'est pas installé**, il apparaît en commentaire :
+If a requested package **is not installed**, it appears as a comment:
 
 ```ini
-# nodejs  (non installé — version minimale à définir manuellement)
+# nodejs  (not installed — minimum version to be defined manually)
 ```
 
-Vous pouvez compléter manuellement la version minimale requise avant de
-partager le fichier avec votre équipe.
+You can manually fill in the required minimum version before sharing the
+file with your team.
 
 ---
 
-### Paquets par défaut
+### Default Packages
 
-Utilisés lorsqu'aucun paquet n'est fourni en argument :
+Used when no packages are provided as arguments:
 
 ```
-git  curl  wget  python (ou python3)  gcc  make  cmake
+git  curl  wget  python (or python3)  gcc  make  cmake
 tar  unzip  rsync  openssl  bash
 ```
 
-> **Détection cross-distro :** `gen-deps` choisit automatiquement le bon
-> nom du paquet Python selon le gestionnaire détecté :
+> **Cross-distro detection:** `gen-deps` automatically selects the correct
+> Python package name based on the detected manager:
 >
-> | Gestionnaire | Paquet utilisé |
+> | Manager | Package used |
 > |---|---|
 > | `pacman` (Arch, Manjaro…) | `python` |
 > | `apt`, `dnf`, `yum`, `zypper`, `apk` | `python3` |
 
 ---
 
-### Récupération des versions
+### Version Retrieval
 
-`gen-deps` interroge uniquement la base de données **locale** — pas de
-requête réseau.
+`gen-deps` queries only the **local** database — no network requests.
 
-| Gestionnaire | Commande utilisée |
+| Manager | Command used |
 |---|---|
-| `apt` | `dpkg -l <pkg>` → champ version |
-| `pacman` | `pacman -Q <pkg>` → champ version |
+| `apt` | `dpkg -l <pkg>` → version field |
+| `pacman` | `pacman -Q <pkg>` → version field |
 | `dnf / yum / zypper` | `rpm -q --qf '%{VERSION}' <pkg>` |
-| `apk` | `apk info <pkg>` → première ligne |
+| `apk` | `apk info <pkg>` → first line |
 
 ---
 
-### Format du fichier généré
+### Generated File Format
 
 ```ini
-# Fichier de configuration des dépendances
-# Généré automatiquement le YYYY-MM-DD HH:MM:SS par gen-deps
-# Format : nom_paquet >= version_minimale
+# Dependency configuration file
+# Automatically generated on YYYY-MM-DD HH:MM:SS by gen-deps
+# Format: package_name >= minimum_version
 
-[project:<nom-projet>]
+[project:<project-name>]
 git                  >= 2.54.0
 curl                 >= 8.20.0
 wget                 >= 1.25.0
@@ -549,45 +544,44 @@ unzip                >= 6.0
 rsync                >= 3.4.2
 openssl              >= 3.6.2
 bash                 >= 5.3.9
-# build-essential  (non installé — version minimale à définir manuellement)
+# build-essential  (not installed — minimum version to be defined manually)
 ```
 
-**Règles de format (compatibles avec le parser de `depman`) :**
+**Format rules (compatible with `depman`'s parser):**
 
-| Élément | Règle |
-|---------|-------|
-| Commentaires | Lignes commençant par `#` → ignorées par `depman` |
-| Sections | Lignes entre `[...]` → ignorées par `depman` |
-| Lignes vides | Ignorées par `depman` |
-| Dépendance valide | `<paquet> >= <version>` (opérateur `>=` obligatoire) |
-| Alignement | Nom du paquet sur 20 caractères, puis `>= version` |
-| En-tête | Horodatage automatique à la génération |
+| Element | Rule |
+|---------|------|
+| Comments | Lines starting with `#` → ignored by `depman` |
+| Sections | Lines between `[...]` → ignored by `depman` |
+| Empty lines | Ignored by `depman` |
+| Valid dependency | `<package> >= <version>` (`>=` operator required) |
+| Alignment | Package name padded to 20 characters, then `>= version` |
+| Header | Automatic timestamp at generation |
 
 ---
 
-### Workflow recommandé
+### Recommended Workflow
 
 ```bash
-# 1 — Générer le deps.conf depuis votre machine de référence
+# 1 — Generate deps.conf from your reference machine
 ./gen-deps mon-projet git curl python gcc make
-# ou depuis un requirements.txt :
+# or from a requirements.txt:
 ./gen-deps mon-projet -r requirements.txt
 
-# 2 — Ouvrir et vérifier le fichier généré
+# 2 — Open and review the generated file
 cat mon-projet/deps.conf
 
-# 3 — Simuler l'installation sur une autre machine (aucune modification)
+# 3 — Simulate installation on another machine (no changes made)
 depman -n -s mon-projet
 
-# 4 — Lancer l'installation réelle
+# 4 — Run the actual installation
 sudo depman -s mon-projet
 
-# 5 — Vérifier le snapshot créé automatiquement
+# 5 — Check the automatically created snapshot
 ls /var/log/depman/snapshots/
 
-# 6 — Comparer deux snapshots après un changement
+# 6 — Compare two snapshots after a change
 depman -d mon-projet 20260513192916 20260513192922
 ```
 
 ---
-
